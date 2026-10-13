@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru" data-theme="{{ settings.theme|default('light') }}">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf|default('') }}">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}Staff · Учёт сотрудников{% endblock %}</title>
+  <link rel="icon" href="/assets/logo.png"><link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+{% block body %}{% endblock %}
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+<dialog id="enrollment-dialog" class="dialog enrollment-dialog">
+  <div class="dialog-header"><div><span class="eyebrow">Выдача пропуска</span><h2>NFC и Wallet</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Закрыть">×</button></div>
+  <form id="enrollment-login">
+    <p class="muted">Войдите с ID администратора и PIN выдачи или обычным паролем.</p>
+    <div class="form-grid"><label>ID администратора<input name="employee_id" type="text" inputmode="none" spellcheck="false" autocapitalize="characters" required autocomplete="username"></label><label><span id="enrollment-secret-label">PIN</span><input name="pin" type="password" inputmode="none" required autocomplete="off" maxlength="12"></label></div>
+    <label class="check"><input name="use_password" type="checkbox"> Использовать обычный пароль</label>
+    <div id="enrollment-keypad" class="pin-keypad" role="group" aria-label="Цифровая клавиатура">
+      <span id="enrollment-keypad-target" class="small muted pin-keypad-caption">Ввод: ID администратора</span>
+      <button type="button" data-pin-key="1">1</button><button type="button" data-pin-key="2">2</button><button type="button" data-pin-key="3">3</button>
+      <button type="button" data-pin-key="4">4</button><button type="button" data-pin-key="5">5</button><button type="button" data-pin-key="6">6</button>
+      <button type="button" data-pin-key="7">7</button><button type="button" data-pin-key="8">8</button><button type="button" data-pin-key="9">9</button>
+      <button type="button" data-pin-key="clear" aria-label="Очистить поле">C</button><button type="button" data-pin-key="0">0</button><button type="button" data-pin-key="backspace" aria-label="Удалить последнюю цифру">⌫</button>
+      <button type="button" data-pin-key="next" class="pin-keypad-next">Перейти к PIN →</button>
+    </div>
+    <button class="button primary" type="submit">Открыть выдачу</button>
+  </form>
+  <div id="enrollment-tools" hidden>
+  <div class="tabs enrollment-tabs"><button type="button" data-enrollment-tab="nfc" class="active">NFC-карта</button><button type="button" data-enrollment-tab="wallet">Wallet на телефоне</button></div>
+  <form id="enrollment-bind"><div class="notice">Чтение в этом режиме регистрирует карту и не создаёт отметку.</div><label>Сотрудник<select name="employee_id" required><option value="">Выберите сотрудника</option></select></label><label>Приложите NFC-карту<input name="code" id="enrollment-code" placeholder="NFC:…" autocomplete="off" required></label><p class="muted small">Ридер должен передавать настроенный префикс NFC:. Значение можно проверить перед привязкой.</p><div class="inline"><button class="button primary" type="submit">Привязать карту</button></div></form>
+  <section id="enrollment-wallet" hidden>
+    <p class="small muted">Один пропуск для Apple Wallet и Google Wallet. Существующий пропуск используется повторно.</p>
+    <label>Сотрудник<select id="enrollment-wallet-employee"><option value="">Выберите сотрудника</option></select></label>
+    <p id="enrollment-wallet-quota" class="small muted"></p>
+    <div class="button-row"><button type="button" class="button primary" id="enrollment-wallet-issue" disabled>Создать пропуск</button><button type="button" class="button" id="enrollment-wallet-refresh" disabled>Проверить статус</button></div>
+    <div class="wallet-install" id="enrollment-wallet-result" hidden><img id="enrollment-wallet-qr" alt="QR для добавления пропуска в Wallet"><strong>Сканируйте камерой телефона</strong><p class="small muted">На открывшейся странице выберите Apple Wallet или Google Wallet.</p><button type="button" class="text-button" id="enrollment-wallet-copy">Копировать ссылку</button></div>
+    <p class="form-status" id="enrollment-wallet-status" role="status"></p>
+  </section>
+  <p id="enrollment-expiry" class="small muted enrollment-expiry"></p>
+  </div>
+  <p id="enrollment-status" class="form-status" role="status"></p>
+</dialog>
+</body></html>

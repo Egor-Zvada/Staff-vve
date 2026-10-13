@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="{{ csrf }}"><meta name="robots" content="noindex,nofollow"><title>Служебные решения</title><link rel="stylesheet" href="/assets/app.css"></head>
+<body><main style="max-width:1100px;margin:auto;padding:28px">
+<header class="inline" style="justify-content:space-between"><div><span class="eyebrow">Доступ владельца</span><h1>Служебные решения</h1></div><form method="post" action="{{ private_path }}/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="button">Выйти</button></form></header>
+<form method="get" class="card"><div class="form-grid"><label>Сотрудник<select name="employee_id">{% for person in employees %}<option value="{{ person.id }}" {{ employee_id == person.id ? 'selected' : '' }}>{{ person.display_id|default('%03d'|format(person.id)) }} · {{ person.name }}{{ person.active ? '' : ' · уволен' }}</option>{% endfor %}</select></label><label>Дата<input type="date" name="date" value="{{ date }}"></label></div><button class="button primary">Открыть</button></form>
+{% if detail %}
+<form method="post" action="{{ private_path }}/adjust" class="card">
+<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="employee_id" value="{{ employee_id }}"><input type="hidden" name="work_date" value="{{ date }}">
+<h2>Решение по выбранному дню</h2><label>Действие<select name="action"><option value="suppress">Снять признаки и скрыть выбранные записи</option><option value="correct">Исправить официальный табель</option><option value="restore">Вернуть видимость выбранных записей</option></select></label>
+<label class="check"><input type="checkbox" name="all" value="1"> Все основания выбранного дня</label>
+{% for section in [{key:'flags',label:'Признаки',input:'flag_ids'},{key:'changes',label:'Изменения',input:'correction_ids'},{key:'events',label:'Исходные события',input:'event_ids'}] %}
+<h3>{{ section.label }}</h3><div class="table-wrap"><table><thead><tr><th>Выбрать</th><th>ID</th><th>Подробности</th></tr></thead><tbody>{% for item in attribute(detail,section.key)|default([]) %}<tr><td><input type="checkbox" name="{{ section.input }}[]" value="{{ item.id }}" aria-label="Выбрать запись {{ item.id }}"></td><td>{{ item.id }}</td><td style="overflow-wrap:anywhere;white-space:normal">{{ item|json_encode(constant('JSON_UNESCAPED_UNICODE')) }}</td></tr>{% else %}<tr><td colspan="3">Записей нет</td></tr>{% endfor %}</tbody></table></div>
+{% endfor %}
+<fieldset><legend>Для «Исправить» выберите только изменяемые поля</legend><div class="form-grid">{% for key,label in {'arrival':'Приход','departure':'Уход','lunch_out':'Обед: уход','lunch_in':'Обед: возврат','excused_out':'Уважительный уход'} %}<label><span><input type="checkbox" name="apply_fields[]" value="{{ key }}"> {{ label }}</span><input name="values[{{ key }}]" type="time" value="{{ attribute(detail.values|default(detail.day.values|default({})),key)|default('') }}"></label>{% endfor %}</div><p class="muted small">Пустое выбранное поле очищает официальное значение. Остальные поля сохраняются.</p></fieldset>
+<label>Основание<textarea name="reason" required maxlength="1000"></textarea></label><button class="button primary" type="submit">Применить решение</button>
+</form>
+<details class="card"><summary>Полный снимок дня</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ detail|json_encode(constant('JSON_PRETTY_PRINT') b-or constant('JSON_UNESCAPED_UNICODE')) }}</pre></details>
+{% endif %}
+</main></body></html>

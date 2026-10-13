@@ -1,0 +1,18 @@
+{% extends 'base.html.twig' %}
+{% block title %}Отметка · {{ settings.org_name|default('СШ ВВЕ') }}{% endblock %}
+{% block body_class %}scanner-body{% endblock %}
+{% block body %}
+<div class="scanner-page" id="scanner-page">
+  <header class="scanner-header"><div class="brand"><button class="logo-button" data-enrollment-logo aria-label="Логотип школы"><img src="/assets/logo.png" alt="СШ ВВЕ"></button><div><strong>{{ settings.org_name|default('ОГАУ ДО «СШ ВВЕ»') }}</strong><span>Учёт сотрудников</span></div></div><div class="clock"><strong data-server-clock>{{ server_time|default('—') }}</strong><span data-server-date>{{ date|default('') }}</span></div></header>
+  <main class="scanner-main"><div class="online-pill" id="scanner-online"><i></i> Готов к отметке</div><h1>Приложите карточку</h1><p class="scanner-subtitle">Отметка запишется автоматически</p>
+    <div class="event-switch" id="event-switch"><button type="button" data-event="arrival">Приход</button><button type="button" data-event="AUTO" class="selected">Авто</button><button type="button" data-event="departure">Уход</button></div>
+    <p class="auto-description" id="auto-description">Выбор метки по времени сервера</p>
+    <div class="scan-field"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M7 7h3v3H7zm7 0h3v3h-3zM7 14h3v3H7zm7 0h3v3h-3z"/></svg><input id="scan-input" inputmode="none" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="QR или ID сотрудника" placeholder="Ожидание QR-кода" autofocus></div>
+    {% if settings.extra_events|default(false) %}<details class="extra-events"><summary>Другие отметки</summary><div class="event-options"><button type="button" data-event="lunch_out">Обед — ушёл</button><button type="button" data-event="lunch_in">Обед — вернулся</button><button type="button" data-event="excused_out">Уход по уважительной</button></div></details>{% endif %}
+    <div class="scan-result" id="scan-result" role="status" aria-live="polite"><div class="result-symbol">✓</div><div><strong id="result-title">Система готова</strong><span id="result-detail">Можно сканировать следующую карточку</span></div></div>
+    <div class="pending-operations" id="pending-operations" aria-live="polite"></div>
+  </main>
+  <footer class="scanner-footer"><span>Время и дата фиксируются сервером</span><div><button class="text-button" id="typed-mode" type="button">Ввести ID</button><a href="/manual" class="text-button">Вручную</a></div></footer>
+</div>
+<script type="application/json" id="scanner-config">{{ {timestamp:timestamp|default(''),date:date|default(''),quiet_ms:settings.qr_quiet_ms|default(100),auto_start:settings.auto_start|default('05:00'),auto_cutover:settings.auto_cutover|default('12:00'),night_event:settings.night_event|default('arrival'),duplicate_seconds:(settings.duplicate_seconds ?? 3)}|json_encode(15)|raw }}</script>
+{% endblock %}

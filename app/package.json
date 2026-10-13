@@ -1,0 +1,15 @@
+{
+  "name": "staff-v2-browser-tests",
+  "private": true,
+  "scripts": {
+    "test": "node tests/ui-suite.cjs",
+    "test:browser": "node tests/browser.cjs",
+    "test:acceptance": "node tests/acceptance.cjs",
+    "test:wallet": "node tests/wallet-browser.cjs",
+    "test:reports": "node tests/report-browser.cjs",
+    "test:production": "node tests/production.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

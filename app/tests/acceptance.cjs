@@ -1,0 +1,32 @@
+// Isolated HTTP/UI acceptance. Requires QA listener on 8443; never follows Staff1 DNS.
+const fs=require('node:fs'),path=require('node:path');
+const {chromium,origin,productionOrigin,privateDir,readAccess,productionAccessFile,launchOptions,safeError}=require('./browser-runtime.cjs');
+const secrets=readAccess();
+const checks=[];
+let browser;
+(async()=>{
+ browser=await chromium.launch(launchOptions(origin));
+ const context=await browser.newContext({viewport:{width:1680,height:1050},acceptDownloads:true}),page=await context.newPage(),errors=[];
+ page.on('pageerror',e=>errors.push(e.message));page.on('dialog',d=>d.accept());
+ await page.goto(origin+'/login');await page.locator('form[action="/login"] [name=employee_id]').fill('0');await page.locator('form[action="/login"] [name=password]').fill(secrets.admin_password);await Promise.all([page.waitForURL('**/admin'),page.locator('form[action="/login"] button').click()]);
+ const api=(route,data)=>page.evaluate(async({route,data})=>{const r=await fetch(route,{method:data===undefined?'GET':'POST',headers:{Accept:'application/json','Content-Type':'application/json','X-CSRF-Token':document.querySelector('meta[name="csrf-token"]').content},...(data===undefined?{}:{body:JSON.stringify(data)})});return{status:r.status,data:await r.json()};},{route,data});
+ const stamp=Date.now(),csv='ID;Фамилия;Имя;Отчество;Должность;Активен\n500101;Проверочный;Александр;Тестович;Контроль '+stamp+';1\n500102;Архивный;Павел;Тестович;Контроль;0\n';
+ const upload=async()=>{await page.goto(origin+'/admin/import');await page.locator('input[name=file]').setInputFiles({name:'acceptance.csv',mimeType:'text/csv',buffer:Buffer.from(csv)});await Promise.all([page.waitForNavigation(),page.locator('form[action="/admin/import/preview"] button').click()]);if(await page.locator('form[action="/admin/import/commit"] button').isDisabled())throw Error('Import validation failed');await Promise.all([page.waitForNavigation(),page.locator('form[action="/admin/import/commit"] button').click()]);};
+ await upload();checks.push('CSV preview and atomic commit');await upload();checks.push('Repeated import keeps existing IDs');
+ await page.goto(origin+'/admin/employees');if(!await page.locator('body').innerText().then(t=>t.includes('Проверочный Александр')))throw Error('Active imported employee missing');if(await page.locator('body').innerText().then(t=>t.includes('Архивный Павел')))throw Error('Inactive employee in default active list');
+ await page.goto(origin+'/admin/employees?active=all');if(!await page.locator('body').innerText().then(t=>t.includes('Архивный Павел')))throw Error('Inactive employee missing from archive');checks.push('Inactive import stays archived');
+ const inactive=await api('/api/mark',{request_id:crypto.randomUUID(),code:'500102',event_type:'AUTO'});if(inactive.status<400)throw Error('Inactive employee mark accepted');checks.push('Inactive ID refused by scanner');
+ await page.goto(origin+'/admin/print?ids=500101');await page.locator('.badge-placement').first().waitFor();await page.waitForFunction(()=>!document.querySelector('#download-png').disabled);
+ const svg=await page.evaluate(async()=> (await fetch('/admin/print/badge/500101')).text());if(!svg.includes('data:font/ttf;base64,'))throw Error('Badge font subset is missing');checks.push('SVG embeds local Cyrillic font');
+ await page.locator('.badge-placement').first().click();await page.locator('#placement-x').fill('14');await page.locator('#placement-x').dispatchEvent('change');await page.waitForFunction(()=>Math.abs(parseFloat(document.querySelector('.badge-placement').style.left)-14*96/25.4*.55)<1);checks.push('Card placement coordinates in millimetres');
+ await page.locator('#print-undo').click();await page.waitForFunction(()=>document.querySelector('#placement-x').value!=='14');checks.push('Placement undo');
+ const pngEvent=page.waitForEvent('download');await page.locator('#download-png').click();const png=await pngEvent;await png.saveAs(path.join(privateDir,'acceptance-badge.png'));if(await png.failure())throw Error('PNG download failed');checks.push('PNG export produced by browser canvas');
+ await page.goto(origin+'/admin/print?ids=500101,500102');await page.waitForFunction(()=>document.querySelectorAll('.badge-placement').length===2&&!document.querySelector('#download-png').disabled);
+ const zipEvent=page.waitForEvent('download');await page.locator('#download-png').click();const zip=await zipEvent;await zip.saveAs(path.join(privateDir,'acceptance-badges.zip'));if(await zip.failure())throw Error('ZIP download failed');checks.push('Multiple card ZIP export');
+ const pdfEvent=page.waitForEvent('download');await page.locator('#download-pdf').click();const pdf=await pdfEvent;await pdf.saveAs(path.join(privateDir,'acceptance-badges.pdf'));if(await pdf.failure())throw Error('PDF download failed');checks.push('PDF export from current sheet layout');
+ await page.screenshot({path:path.join(privateDir,'acceptance-print.png'),fullPage:true});
+ await page.locator('#sheet-name').fill('QA '+stamp);await page.locator('#save-sheet').click();await page.waitForFunction(name=>[...document.querySelector('#sheet-preset').options].some(o=>o.textContent===name),'QA '+stamp);checks.push('Saved print sheet preset');
+ const csrfNegative=await page.evaluate(async()=>{const r=await fetch('/admin/employees/save',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:'{}'});return r.status;});if(csrfNegative!==403)throw Error('Missing CSRF accepted');checks.push('Mutation requires CSRF');
+ if(process.env.STAFF_QA_WALLET==='1'){await page.goto(origin+'/');const unauthorized=await browser.newContext();const anon=await unauthorized.newPage();await anon.goto(origin+'/');const denied=await anon.evaluate(async()=> (await fetch('/admin/wallet/status?ids=500101',{headers:{Accept:'application/json'}})).status);if(denied!==403)throw Error('Wallet links accessible without authorization '+denied);checks.push('Wallet links require administrative scope');await unauthorized.close();}
+ if(errors.length)throw Error('Browser errors '+errors.join('; '));fs.writeFileSync(path.join(privateDir,'acceptance-results.json'),JSON.stringify({checks,browserErrors:errors},null,2));console.log(JSON.stringify({count:checks.length,checks,browserErrors:errors},null,2));await browser.close();
+})().catch(async e=>{console.error(safeError(e,secrets));await browser?.close();process.exitCode=1;});

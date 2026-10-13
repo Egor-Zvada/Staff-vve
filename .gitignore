@@ -1,0 +1,16 @@
+/app/vendor/
+/app/var/
+/app/.env.local
+/app/.env.*.local
+/app/composer.phar
+/app/node_modules/
+/private-runtime/
+/dist/
+/inspection/
+/v2-planning/
+/IMPLEMENTATION_SCOPE.md
+/DEPLOYMENT_REPORT.md
+*.pem
+*.key
+*.p12
+*.pfx

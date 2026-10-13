@@ -1,0 +1,13 @@
+<?php
+declare(strict_types=1);
+require '/opt/staff-v2/app/vendor/autoload.php';
+(new Symfony\Component\Dotenv\Dotenv())->bootEnv('/opt/staff-v2/app/.env');
+$key=$_SERVER['WALLETWALLET_API_KEY'];$dir='/root/staff-wallet-test';
+function walletCallNamed(string $method,string $route,?array $payload=null):array{
+ global$key;$c=curl_init('https://api.walletwallet.dev'.$route);curl_setopt_array($c,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_CUSTOMREQUEST=>$method,CURLOPT_IPRESOLVE=>CURL_IPRESOLVE_V4,CURLOPT_CONNECTTIMEOUT=>6,CURLOPT_TIMEOUT=>25,CURLOPT_HTTPHEADER=>['Authorization: Bearer '.$key,'Content-Type: application/json']]);if($payload!==null)curl_setopt($c,CURLOPT_POSTFIELDS,json_encode($payload,JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR));$raw=curl_exec($c);$status=curl_getinfo($c,CURLINFO_HTTP_CODE);curl_close($c);if($raw===false)throw new RuntimeException('Result unknown; do not retry creation');$data=json_decode($raw,true,32,JSON_THROW_ON_ERROR);if($status!==200)throw new RuntimeException('Provider HTTP '.$status);return$data;
+}
+$file=$dir.'/named-response.json';$marker=$dir.'/named-request-started';
+if(!is_file($file)){if(is_file($marker))throw new RuntimeException('Prior request outcome unknown; do not create again');file_put_contents($marker,date(DATE_ATOM));chmod($marker,0600);$response=walletCallNamed('POST','/api/passes',['barcodeValue'=>'099','barcodeFormat'=>'QR','barcodeAltText'=>'099','logoText'=>'ПРОПУСК','organizationName'=>'ОГАУ ДО"СШ ВВЕ"','primaryFields'=>[['label'=>'пропуск','value'=>'Проверочный Кошелёк']],'secondaryFields'=>[['label'=>'ID','value'=>'099']],'colorPreset'=>'blue','sharingProhibited'=>true,'credentials'=>'platform']);file_put_contents($file,json_encode($response,JSON_THROW_ON_ERROR));chmod($file,0600);}else$response=json_decode(file_get_contents($file),true,32,JSON_THROW_ON_ERROR);
+$bytes=base64_decode($response['applePass'],true);file_put_contents($dir.'/named.pkpass',$bytes);chmod($dir.'/named.pkpass',0600);$zip=new ZipArchive();$zip->open($dir.'/named.pkpass');$pass=json_decode($zip->getFromName('pass.json'),true,32,JSON_THROW_ON_ERROR);$zip->close();
+copy($file,'/tmp/staff-wallet-named-test.json');chmod('/tmp/staff-wallet-named-test.json',0600);chown('/tmp/staff-wallet-named-test.json','codex-maint');
+echo json_encode(['fictitious_display_id'=>'099','leading_zero_preserved'=>($pass['barcodes'][0]['message']??null)==='099','primary_name_correct'=>($pass['generic']['primaryFields'][0]['value']??null)==='Проверочный Кошелёк','secondary_id_correct'=>($pass['generic']['secondaryFields'][0]['value']??null)==='099','usage'=>walletCallNamed('GET','/api/auth/usage')],JSON_UNESCAPED_UNICODE).PHP_EOL;

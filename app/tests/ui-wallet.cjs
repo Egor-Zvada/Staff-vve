@@ -1,0 +1,46 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const {chromium,origin,productionOrigin,privateDir,readAccess,productionAccessFile,launchOptions,safeError}=require('./browser-runtime.cjs');
+const base=fs.readFileSync(path.join(__dirname,'../templates/base.html.twig'),'utf8');
+const dialog=base.slice(base.indexOf('<dialog id="enrollment-dialog"'),base.indexOf('</dialog>')+9);
+const script=fs.readFileSync(path.join(__dirname,'../public/assets/app.js'),'utf8');
+const html=`<!doctype html><html><head><meta name="csrf-token" content="fixture"></head><body class="scanner-body"><button data-enrollment-logo>Logo</button><input id="scan-input"><div id="scanner-online"><i></i> Готов</div><div id="scan-result"><div class="result-symbol"></div><div id="result-title"></div><div id="result-detail"></div></div><div id="pending-operations"></div><div id="toast-stack"></div>${dialog}</body></html>`;
+let browser;
+(async()=>{
+  browser=await chromium.launch(launchOptions());const context=await browser.newContext();const page=await context.newPage(),calls=[],errors=[],quota={used:5,remaining:995,limit:1000,stale:false};let issued=false;
+  page.on('pageerror',e=>errors.push(e.message));
+  await page.route('https://staff-wallet.test/**',async route=>{
+    const request=route.request(),url=new URL(request.url());calls.push({path:url.pathname,method:request.method()});let data;
+    if(url.pathname==='/')return route.fulfill({status:200,contentType:'text/html',body:html});
+    if(url.pathname.endsWith('/qr'))return route.fulfill({status:200,contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240"><rect width="240" height="240" fill="white"/><rect x="30" y="30" width="100" height="100"/></svg>'});
+    if(url.pathname==='/api/enrollment/login')data={success:true,expires_in:120};
+    else if(url.pathname==='/api/enrollment/employees')data={success:true,employees:[{id:7,name:'Тестовый сотрудник'}]};
+    else if(url.pathname==='/api/enrollment/wallet/7'){
+      if(request.method()==='POST')issued=true;
+      data={success:true,employee_id:7,display_id:'007',state:issued?'ready':'not_issued',cached:issued,quota,...(issued?{share_url:'https://wallet.example.test/pass/fixture',qr_url:'/api/enrollment/wallet/7/qr'}:{})};
+    }else throw new Error('Unexpected request '+request.method()+' '+url.pathname);
+    return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(data)});
+  });
+  await page.goto('https://staff-wallet.test/');await page.addScriptTag({content:script});
+  assert.equal(await page.locator('#enrollment-dialog').getAttribute('open'),null);
+  for(let i=0;i<5;i++)await page.locator('[data-enrollment-logo]').click();
+  assert.equal(await page.locator('#scan-input').isDisabled(),true);
+  assert.equal(await page.locator('#enrollment-keypad').isVisible(),true);
+  await page.locator('[data-pin-key="0"]').click();assert.equal(await page.locator('#enrollment-login [name=employee_id]').inputValue(),'0');
+  await page.locator('[data-pin-key="next"]').click();for(const digit of ['1','2','3','5'])await page.locator(`[data-pin-key="${digit}"]`).click();await page.locator('[data-pin-key="backspace"]').click();await page.locator('[data-pin-key="4"]').click();assert.equal(await page.locator('#enrollment-login [name=pin]').inputValue(),'1234');
+  await page.locator('[name=use_password]').check();assert.equal(await page.locator('#enrollment-keypad').isVisible(),false);assert.equal(await page.locator('#enrollment-login [name=pin]').inputValue(),'');await page.locator('[name=use_password]').uncheck();assert.equal(await page.locator('#enrollment-keypad').isVisible(),true);
+  await page.locator('#enrollment-login [name=pin]').fill('1234');await page.locator('#enrollment-login button[type=submit]').click();
+  await page.locator('[data-enrollment-tab=wallet]').click();await page.locator('#enrollment-wallet-employee').selectOption('7');
+  await page.locator('#enrollment-wallet-issue').waitFor({state:'visible'});await page.waitForFunction(()=>!document.querySelector('#enrollment-wallet-issue').disabled);
+  assert.equal(calls.filter(r=>r.path.includes('/wallet/')&&r.method==='POST').length,0);
+  await page.locator('#enrollment-wallet-issue').click();await page.locator('#enrollment-wallet-result').waitFor({state:'visible'});
+  assert.equal(await page.locator('#enrollment-wallet-qr').getAttribute('src'),'/api/enrollment/wallet/7/qr');
+  await page.locator('#enrollment-wallet-refresh').click();await page.waitForTimeout(50);
+  assert.equal(calls.filter(r=>r.path.includes('/wallet/')&&r.method==='POST').length,1);
+  assert.equal(calls.some(r=>r.path==='/api/mark'),false);
+  await page.locator('#enrollment-dialog [data-close-dialog]').click();await page.waitForFunction(()=>!document.querySelector('#scan-input').disabled);assert.equal(await page.locator('#scan-input').isEnabled(),true);
+  assert.deepEqual(errors,[]);
+  console.log(JSON.stringify({passed:8,checks:['Five taps and PIN guard issuing UI','Touch keypad immediately enters administrator ID','Touch PIN, backspace and mode reset','Password checkbox hides touch keypad','Status read never issues a pass','Explicit issue displays local share QR','Cache refresh does not reissue','Issuing makes no attendance event and restores scanner'],providerCalls:false,browserErrors:errors},null,2));
+  await browser.close();
+})().catch(async error=>{console.error(error);await browser?.close();process.exitCode=1;});

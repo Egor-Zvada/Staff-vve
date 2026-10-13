@@ -1,0 +1,7 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+require dirname(__DIR__).'/vendor/autoload.php';
+(new Symfony\Component\Dotenv\Dotenv())->bootEnv(dirname(__DIR__).'/.env');
+date_default_timezone_set('Asia/Sakhalin');
+(new Symfony\Bundle\FrameworkBundle\Console\Application(new App\Kernel($_SERVER['APP_ENV'] ?? 'prod', (bool)($_SERVER['APP_DEBUG'] ?? false))))->run();

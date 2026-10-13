@@ -1,0 +1,8 @@
+[Unit]
+Description=Staff V2 hourly backup
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=60
+[Install]
+WantedBy=timers.target
