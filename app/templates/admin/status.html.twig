@@ -8,7 +8,8 @@
 {% for key,value in status|default(summary|default({})) %}
 <dl class="status-item"><dt>{{ names[key]|default(key) }}</dt><dd>
 {% if value is same as(null) %}<span class="muted">Не определено</span>
-{% elseif key == 'disk_free_bytes' %}{{ (value / 1073741824)|number_format(1,',',' ') }} GiB
+{% elseif key == 'disk_free_bytes' %}{{ (value / 1073741824)|number_format(1,',',' ') }} ГиБ
+{% elseif key == 'timezone' %}{{ value == 'Asia/Sakhalin' ? 'Сахалин · UTC+11' : value }}
 {% elseif value is same as(true) %}<span class="tag success">Да</span>
 {% elseif value is same as(false) %}<span class="tag warning">Нет</span>
 {% else %}{{ value is iterable ? value|json_encode : value }}{% endif %}

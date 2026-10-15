@@ -54,7 +54,7 @@ namespace {
     $db=new \App\Infrastructure\Database();
     $schema=[
         'CREATE TABLE employee_id_sequence (id INTEGER PRIMARY KEY,next_id INTEGER NOT NULL)',
-        "CREATE TABLE employees (id INTEGER PRIMARY KEY,pass_code TEXT UNIQUE,surname TEXT NOT NULL,given_name TEXT NOT NULL,patronymic TEXT DEFAULT '',position TEXT DEFAULT '',legacy_full_name TEXT,active INTEGER DEFAULT 1,is_service INTEGER DEFAULT 0,admin_role TEXT DEFAULT 'NONE',password_hash TEXT,enrollment_pin_hash TEXT,auth_version INTEGER DEFAULT 0,started_on TEXT,ended_on TEXT,version INTEGER DEFAULT 1,created_at TEXT,updated_at TEXT)",
+        "CREATE TABLE employees (id INTEGER PRIMARY KEY,pass_code TEXT UNIQUE,surname TEXT NOT NULL,given_name TEXT NOT NULL,patronymic TEXT DEFAULT '',position TEXT DEFAULT '',is_guard INTEGER DEFAULT 0,legacy_full_name TEXT,active INTEGER DEFAULT 1,is_service INTEGER DEFAULT 0,admin_role TEXT DEFAULT 'NONE',password_hash TEXT,enrollment_pin_hash TEXT,auth_version INTEGER DEFAULT 0,started_on TEXT,ended_on TEXT,version INTEGER DEFAULT 1,created_at TEXT,updated_at TEXT)",
         'CREATE TABLE employee_profile_versions (id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER,surname TEXT,given_name TEXT,patronymic TEXT,position TEXT,active INTEGER,valid_from TEXT,valid_to TEXT,actor_employee_id INTEGER,created_at TEXT)',
         'CREATE TABLE schedule_plan_cache (employee_id INTEGER,work_date TEXT,plan_json TEXT)',
         'CREATE TABLE attendance_days (employee_id INTEGER,work_date TEXT,plan_json TEXT,arrival_at TEXT)',
@@ -79,6 +79,11 @@ namespace {
     $check($employee['id']===101,'Automatic ID did not use the monotonic sequence');
     $check(preg_match('/^VVE-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/D',$employee['pass_code'])===1 && $employee['display_id']===$employee['pass_code'],'New employee does not receive canonical random pass code');
     $check((int)$identifiers->resolveCode($employee['pass_code'])['id']===101,'Current alpha code does not resolve its permanent employee');
+    $check($employee['is_guard']===0,'A new office employee is unexpectedly exempt from attendance control');
+    $adminBefore=$service->find(100); $adminHash=$db->scalar('SELECT password_hash FROM employees WHERE id=100');
+    $guardAdmin=$service->save(['id'=>100,'version'=>$adminBefore['version'],'is_guard'=>1],100);
+    $check($guardAdmin['is_guard']===1 && $guardAdmin['admin_role']==='ADMIN' && $guardAdmin['auth_version']===$adminBefore['auth_version'] && $db->scalar('SELECT password_hash FROM employees WHERE id=100')===$adminHash,'Guard classification is incorrectly tied to administrative permissions');
+    $service->save(['id'=>100,'version'=>$guardAdmin['version'],'is_guard'=>0],100);
     try { $identifiers->resolveCode('101'); $check(false,'Internal employee ID became a scanner backdoor'); } catch(\DomainException) { $check(true,'Internal alpha employee ID rejected'); }
     $db->insert('schedule_groups',['id'=>1,'name'=>'Офис']);
     $db->insert('schedule_assignments',['id'=>1,'employee_id'=>101,'group_id'=>1,'valid_from'=>$date('-30 days')]);
@@ -102,11 +107,28 @@ namespace {
     $check($activeAt(101,$date('-1 day'))===0 && $activeAt(101,$today)===1,'Rehire lost the historical gap');
     $credential=$service->bindCredential(['employee_id'=>101,'kind'=>'NFC','value'=>'NFC:00:04:AB:01'],100);
     $check($credential['kind']==='NFC_UID' && $credential['value']==='0004AB01','NFC lost leading zero bytes');
+    $guardProfileCount=(int)$db->scalar('SELECT COUNT(*) FROM employee_profile_versions WHERE employee_id=101');
+    $guardAuthVersion=$employee['auth_version']; $guardCode=$employee['pass_code'];
+    $db->exec("UPDATE attendance_days SET plan_json=? WHERE employee_id=101",['{"is_workday":true,"end":"18:00"}']);
+    $employee=$service->save(array_replace($employee,['is_guard'=>1]),100);
+    $check($employee['is_guard']===1 && $service->find(101)['is_guard']===1 && $service->list(['q'=>$guardCode])[0]['is_guard']===1,'Guard classification is not persisted or available to the administration UI');
+    $check($employee['auth_version']===$guardAuthVersion && $employee['admin_role']==='NONE' && $employee['pass_code']===$guardCode,'Guard classification changed credentials or administrative access');
+    $check((int)$db->scalar('SELECT COUNT(*) FROM employee_profile_versions WHERE employee_id=101')===$guardProfileCount && $db->scalar('SELECT plan_json FROM attendance_days WHERE employee_id=101')==='{"is_workday":true,"end":"18:00"}','Current guard classification rewrote the underlying frozen schedule');
+    $check($db->scalar('SELECT arrival_at FROM attendance_days WHERE employee_id=101')==='2026-01-01 01:00:00' && (int)$db->scalar('SELECT active FROM employee_credentials WHERE id=?',[$credential['id']])===1,'Guard classification erased attendance facts or disabled the NFC card');
+    $employee=$service->save(['id'=>101,'version'=>$employee['version'],'position'=>'Охрана'],100);
+    $check($employee['is_guard']===1,'A partial profile edit silently reset guard classification');
+    $employee=$db->transaction(fn()=>$service->applyImportRow(['id'=>101,'version'=>$employee['version'],'surname'=>'Новое имя','given_name'=>'Иван','position'=>'Охрана','is_guard'=>0],100));
+    $check($employee['is_guard']===1,'A directory import silently reset attendance-control exemption');
+    $guardVersion=$employee['version'];
+    $employee=$service->save(array_replace($employee,['is_guard'=>0]),100);
+    $check($employee['is_guard']===0 && $db->scalar('SELECT plan_json FROM attendance_days WHERE employee_id=101')==='{"is_workday":true,"end":"18:00"}','Removing guard classification lost the schedule needed to restore ordinary control');
+    try { $service->save(['id'=>101,'version'=>$guardVersion,'is_guard'=>1],100); $check(false,'A stale guard form overwrote a newer classification'); } catch(\Symfony\Component\HttpKernel\Exception\ConflictHttpException) { $check($service->find(101)['is_guard']===0,'Stale guard update changed the employee'); }
     $check(!str_contains((string)$db->scalar('SELECT before_json FROM audit_log WHERE action="employee.update" LIMIT 1'),'password_hash'),'Audit exposes a password hash');
     $service->audit(100,'badges.export','print',null,null,['ids'=>[101]]);
     $check($db->scalar('SELECT entity_id FROM audit_log WHERE action="badges.export"')==='','Null PDF audit ID is not normalized');
-    $legacy=$db->transaction(fn()=>$service->applyImportRow(['id'=>'007','surname'=>'Уволен','given_name'=>'Старый','active'=>0],100));
+    $legacy=$db->transaction(fn()=>$service->applyImportRow(['id'=>'007','surname'=>'Уволен','given_name'=>'Старый','active'=>0,'is_guard'=>1],100));
     $check($legacy['id']===7 && $activeAt(7,$today)===0,'Legacy inactive import became expected today');
+    $check($legacy['is_guard']===0,'A directory import enabled an unreviewed guard exemption');
     $check($legacy['pass_code']==='007','Legacy import changed an existing numeric card code');
     $check((int)$db->scalar('SELECT next_id FROM employee_id_sequence')===102,'Legacy ID import reduced the sequence');
     $check(count($service->list(['q'=>'000']))<count($service->list()),'Searching zeros matches everybody');

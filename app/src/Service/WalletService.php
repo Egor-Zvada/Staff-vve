@@ -139,7 +139,7 @@ final class WalletService
         $reservation = $this->db->transaction(function () use ($id, $actorId): array {
             $this->db->one('SELECT id FROM wallet_provider_usage WHERE id = 1'.$this->lock());
             $row = $this->db->one('SELECT * FROM wallet_passes WHERE employee_id = ?'.$this->lock(), [$id]);
-            if ($row === null || $row['serial_number'] === null || in_array($row['state'], ['issuing', 'ambiguous'], true)) { throw new DomainException('Нет подтверждённого serial для отзыва. Сначала восстановите ранее выданный пропуск.', 409); }
+            if ($row === null || $row['serial_number'] === null || in_array($row['state'], ['issuing', 'ambiguous'], true)) { throw new DomainException('Нет подтверждённого серийного номера для отзыва. Сначала восстановите ранее выданный пропуск.', 409); }
             if ($row['state'] === 'revoked') { return ['cached' => true, 'row' => $row]; }
             if ($row['state'] === 'revoking' && $this->now()->getTimestamp() - strtotime($row['updated_at'].' UTC') < 60) { return ['blocked' => true, 'row' => $row]; }
             $this->update('wallet_passes', ['state' => 'revoking', 'updated_at' => $this->stamp()], 'employee_id = ?', [$id]);
@@ -231,10 +231,10 @@ final class WalletService
         $pass = $this->validatePass($id, $data);
         if (!$this->provider->configured()) { throw new DomainException('Для восстановления нужна проверка владельца в Wallet API.', 409); }
         try { $response = $this->provider->request('GET', '/api/passes/'.$pass['serial_number']); }
-        catch (Throwable) { throw new DomainException('Не удалось проверить Wallet serial. Восстановление не применено.', 409); }
+        catch (Throwable) { throw new DomainException('Не удалось проверить серийный номер Wallet-пропуска. Восстановление не применено.', 409); }
         $metadata = json_decode($response['body'], true);
         $currentGoogle = is_array($metadata) ? (string) ($metadata['googleSaveUrl'] ?? '') : '';
-        if ($response['status'] !== 200 || !is_array($metadata) || ($metadata['serial'] ?? $metadata['serialNumber'] ?? '') !== $pass['serial_number'] || ($metadata['credentials'] ?? '') !== 'platform' || !str_starts_with($currentGoogle, 'https://pay.google.com/gp/v/save/') || strlen($currentGoogle) > 20000) { throw new DomainException('Wallet API не подтвердил владение serial или Google ссылку.', 409); }
+        if ($response['status'] !== 200 || !is_array($metadata) || ($metadata['serial'] ?? $metadata['serialNumber'] ?? '') !== $pass['serial_number'] || ($metadata['credentials'] ?? '') !== 'platform' || !str_starts_with($currentGoogle, 'https://pay.google.com/gp/v/save/') || strlen($currentGoogle) > 20000) { throw new DomainException('Wallet API не подтвердил владение пропуском с этим серийным номером или ссылку Google.', 409); }
         // The provider may mint a fresh install JWT when read. Ownership and signed barcode
         // are already verified; reuse that current link rather than comparing JWT bytes.
         $pass['google_save_url'] = $currentGoogle;
@@ -286,7 +286,7 @@ final class WalletService
     {
         $result = $this->result($id, $row, true);
         if (in_array($result['state'], ['revoking', 'revoke_unknown'], true)) { return $result + ['code' => 409, 'error' => 'Отзыв ещё не подтверждён. Повторите отзыв; новый пропуск до подтверждения не создаётся.']; }
-        return $result + ['code' => 409, 'recovery_required' => true, 'error' => $result['state'] === 'issuing' ? 'Выдача уже начата. Обновите статус; повторный запрос создания не отправляется.' : 'Результат выдачи неизвестен. Повторное создание заблокировано; администратор должен восстановить существующий пропуск по serial.'];
+        return $result + ['code' => 409, 'recovery_required' => true, 'error' => $result['state'] === 'issuing' ? 'Выдача уже начата. Обновите статус; повторный запрос создания не отправляется.' : 'Результат выдачи неизвестен. Повторное создание заблокировано; администратор должен восстановить существующий пропуск по серийному номеру.'];
     }
 
     private function result(int $id, ?array $row, bool $cached): array

@@ -1,6 +1,57 @@
-{% extends 'admin/base.html.twig' %}{% block title %}Табель · Staff{% endblock %}{% block page_title %}Табель и история{% endblock %}
+{% extends 'admin/base.html.twig' %}
+{% block title %}Табель · Staff{% endblock %}
+{% block page_title %}Табель и история{% endblock %}
+
+{% macro day_navigation(n, from, to, filters, position) %}
+<nav class="attendance-day-nav" aria-label="{{ position == 'top' ? 'Дни табеля' : 'Дни табеля внизу' }}" data-attendance-day-nav>
+    <div class="attendance-day-title"><strong>{{ n.label }}</strong><span class="muted">День {{ n.index }} из {{ n.count }}</span></div>
+    <div class="attendance-day-controls">
+        {% if n.older_url %}<a class="button small" href="{{ n.older_url }}" data-day-older>← Ранее</a>{% else %}<span class="button small disabled" aria-disabled="true">← Ранее</span>{% endif %}
+        <form method="get" class="attendance-day-picker">
+            <input type="hidden" name="from" value="{{ from }}"><input type="hidden" name="to" value="{{ to }}">
+            <input type="hidden" name="employee_id" value="{{ filters.employee_id|default('') }}"><input type="hidden" name="finding" value="{{ filters.finding|default('') }}">
+            <label><span class="sr-only">Перейти к дню</span><select name="day" aria-label="День табеля">{% for item in n.dates %}<option value="{{ item.date }}" {{ item.date == n.day ? 'selected' : '' }}>{{ item.label }}</option>{% endfor %}</select></label>
+            <button class="button small" type="submit">Перейти</button>
+        </form>
+        {% if n.newer_url %}<a class="button small" href="{{ n.newer_url }}" data-day-newer>Новее →</a>{% else %}<span class="button small disabled" aria-disabled="true">Новее →</span>{% endif %}
+        {% if n.today_url and n.today != n.day %}<a class="button small" href="{{ n.today_url }}">Сегодня</a>{% elseif n.latest != n.day %}<a class="button small" href="{{ n.latest_url }}">Последний день</a>{% endif %}
+    </div>
+</nav>
+{% endmacro %}
+
 {% block content %}
-<div class="page-heading"><div><span class="eyebrow">Факты и изменения</span><h1>Табель сотрудников</h1><p class="muted">Официальные времена, исходные события и замечания</p></div><div class="button-row"><a class="button" href="/admin/export?from={{ from|default('') }}&to={{ to|default('') }}&employee_id={{ filters.employee_id|default('') }}&finding={{ filters.finding|default('') }}&format=pdf">PDF</a><a class="button" href="/admin/export?from={{ from|default('') }}&to={{ to|default('') }}&employee_id={{ filters.employee_id|default('') }}&finding={{ filters.finding|default('') }}&format=csv">CSV</a><a class="button primary" href="/admin/export?from={{ from|default('') }}&to={{ to|default('') }}&employee_id={{ filters.employee_id|default('') }}&finding={{ filters.finding|default('') }}&format=xlsx">↓ Excel</a></div></div>
-<section class="card table-card"><form class="toolbar" method="get" style="padding-top:22px"><label>С<input name="from" type="date" value="{{ from|default('') }}" required></label><label>По<input name="to" type="date" value="{{ to|default('') }}" required></label><label>Сотрудник<select name="employee_id"><option value="">Все сотрудники</option>{% for e in employees|default([]) %}<option value="{{ e.id }}" {{ filters.employee_id|default('') == e.id ? 'selected' : '' }}>{{ e.name|default(e.full_name|default('Сотрудник')) }} · {{ e.display_id|default(e.pass_code|default('%03d'|format(e.id))) }}</option>{% endfor %}</select></label><label>Показать<select name="finding"><option value="">Все записи</option><option value="late" {{ filters.finding|default('') == 'late' ? 'selected' : '' }}>Опоздания</option><option value="early" {{ filters.finding|default('') == 'early' ? 'selected' : '' }}>Ранние уходы</option><option value="retro" {{ filters.finding|default('') == 'retro' ? 'selected' : '' }}>Поздние внесения</option><option value="flags" {{ filters.finding|default('') == 'flags' ? 'selected' : '' }}>С замечаниями</option><option value="changes" {{ filters.finding|default('') == 'changes' ? 'selected' : '' }}>С изменениями</option></select></label><button class="button" type="submit">Показать</button></form><div class="table-scroll"><table class="data-table"><thead><tr><th>День</th><th>Сотрудник</th><th>Приход</th><th>Уход</th>{% if settings.extra_events|default(false) %}<th>Обед ушёл</th><th>Обед вернулся</th><th>Уважительный</th>{% endif %}<th>Контроль</th><th></th></tr></thead><tbody>{% for r in rows|default([]) %}<tr><td class="numeric">{{ r.work_date|default(r.date|default('')) }}</td><td class="person"><strong>{{ r.name|default(r.full_name|default('')) }}</strong><span>ID {{ r.display_id|default(r.employee.display_id|default(r.employee.pass_code|default('%03d'|format(r.employee_id|default(r.id))))) }} · {{ r.group_name|default('Без графика') }}</span></td>{% for key in settings.extra_events|default(false) ? ['arrival','departure','lunch_out','lunch_in','excused_out'] : ['arrival','departure'] %}<td class="numeric">{{ attribute(r.values|default({}),key)|default('—') }}</td>{% endfor %}<td><div class="flag-list">{% for f in r.flags|default([]) %}{% if not f.suppressed|default(false) %}<span class="tag warning">{{ f.label|default(f.kind|default(f)) }}</span>{% endif %}{% else %}<span class="tag {{ (r.is_working ?? true) ? 'success' : '' }}">{{ (r.is_working ?? true) ? 'Без замечаний' : 'Вне плана' }}</span>{% endfor %}</div></td><td><button class="button small" data-day-detail data-employee-id="{{ r.employee_id|default(r.id) }}" data-date="{{ r.work_date|default(r.date|default('')) }}">История дня</button></td></tr>{% else %}<tr><td colspan="9" class="empty">Записей по выбранным параметрам нет</td></tr>{% endfor %}</tbody></table></div><div class="table-footer"><span>Показано записей: {{ rows|default([])|length }}</span><a href="/admin/help#attendance">Как читать табель</a></div></section>
+<div class="page-heading">
+    <div><span class="eyebrow">Факты и изменения</span><h1>Табель сотрудников</h1><p class="muted">Официальные времена, исходные события и замечания</p></div>
+    <div class="button-row" title="Экспорт всего выбранного периода: {{ from }} — {{ to }}">
+        {% set export_query = 'from=' ~ from|url_encode ~ '&to=' ~ to|url_encode ~ '&employee_id=' ~ filters.employee_id|default('')|url_encode ~ '&finding=' ~ filters.finding|default('')|url_encode %}
+        <a class="button" href="/admin/export?{{ export_query }}&format=pdf">PDF</a><a class="button" href="/admin/export?{{ export_query }}&format=csv">CSV</a><a class="button primary" href="/admin/export?{{ export_query }}&format=xlsx">↓ Excel</a>
+    </div>
+</div>
+<section class="card table-card">
+    <form class="toolbar attendance-filters" method="get">
+        <input type="hidden" name="day" value="{{ navigation.day }}">
+        <label>С<input name="from" type="date" value="{{ from }}" required></label><label>По<input name="to" type="date" value="{{ to }}" required></label>
+        <label>Сотрудник<select name="employee_id"><option value="">Все сотрудники</option>{% for e in employees|default([]) %}<option value="{{ e.id }}" {{ filters.employee_id|default('') == e.id ? 'selected' : '' }}>{{ e.name|default(e.full_name|default('Сотрудник')) }} · {{ e.display_id|default(e.pass_code|default('%03d'|format(e.id))) }}</option>{% endfor %}</select></label>
+        <label>Показать<select name="finding"><option value="">Все записи</option><option value="late" {{ filters.finding|default('') == 'late' ? 'selected' : '' }}>Опоздания</option><option value="early" {{ filters.finding|default('') == 'early' ? 'selected' : '' }}>Ранние уходы</option><option value="retro" {{ filters.finding|default('') == 'retro' ? 'selected' : '' }}>Поздние внесения</option><option value="flags" {{ filters.finding|default('') == 'flags' ? 'selected' : '' }}>С замечаниями</option><option value="changes" {{ filters.finding|default('') == 'changes' ? 'selected' : '' }}>С изменениями</option></select></label>
+        <button class="button" type="submit">Показать</button>
+    </form>
+    {{ _self.day_navigation(navigation, from, to, filters, 'top') }}
+    <div class="table-scroll"><table class="data-table">
+        <thead><tr><th>День</th><th>Сотрудник</th><th>Приход</th><th>Уход</th>{% if settings.extra_events|default(false) %}<th>Обед ушёл</th><th>Обед вернулся</th><th>Уважительный</th>{% endif %}<th>Контроль</th><th></th></tr></thead>
+        <tbody>{% for r in rows|default([]) %}<tr>
+            <td class="numeric">{{ r.work_date|default(r.date|default('')) }}</td>
+            <td class="person"><strong>{{ r.name|default(r.full_name|default('')) }}</strong><span>ID {{ r.display_id|default(r.employee.display_id|default(r.employee.pass_code|default('%03d'|format(r.employee_id|default(r.id))))) }} · {{ r.group_name|default('Без графика') }}</span></td>
+            {% for key in settings.extra_events|default(false) ? ['arrival','departure','lunch_out','lunch_in','excused_out'] : ['arrival','departure'] %}<td class="numeric">{{ attribute(r.values|default({}),key)|default('—') }}</td>{% endfor %}
+            <td><div class="flag-list">
+                {% set visible_flags = r.flags|default([])|filter(f => not f.suppressed|default(false)) %}
+                {% if r.on_leave|default(false) %}<span class="tag">{{ r.leave_label|default('Отпуск') }}</span>{% elseif r.is_guard|default(false) %}<span class="tag">{{ r.tracking_label|default('Охранник · без контроля графика') }}</span>{% endif %}
+                {% for f in visible_flags %}<span class="tag warning">{{ f.label|default('Замечание') }}</span>{% else %}{% if not r.on_leave|default(false) and not r.is_guard|default(false) %}<span class="tag {{ (r.is_working ?? true) ? 'success' : '' }}">{{ (r.is_working ?? true) ? 'Без замечаний' : 'Вне плана' }}</span>{% endif %}{% endfor %}
+            </div></td>
+            <td><button class="button small" data-day-detail data-employee-id="{{ r.employee_id|default(r.id) }}" data-date="{{ r.work_date|default(r.date|default('')) }}">История дня</button></td>
+        </tr>{% else %}<tr><td colspan="{{ settings.extra_events|default(false) ? 9 : 6 }}" class="empty">За {{ navigation.label }} записей по выбранным параметрам нет. Можно перейти к другому дню выше.</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {{ _self.day_navigation(navigation, from, to, filters, 'bottom') }}
+    <div class="table-footer"><span>За {{ navigation.label }} показано записей: {{ rows|default([])|length }}</span><a href="/admin/help#attendance">Как читать табель</a></div>
+</section>
 <dialog id="day-detail-dialog" class="dialog detail-dialog" data-can-edit="{{ user.admin_role|default('') == 'ADMIN' ? '1' : '0' }}"><div class="dialog-header"><div><span class="eyebrow">Факты и корректировки</span><h2 id="day-detail-title">История дня</h2></div><button class="icon-button" data-close-dialog>×</button></div><div id="day-detail-body"></div></dialog>
 {% endblock %}

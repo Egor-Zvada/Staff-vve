@@ -8,6 +8,7 @@ use App\Web;
 use App\Infrastructure\Database;
 use App\Security\Auth;
 use App\Service\AttendanceService;
+use App\Service\DashboardChartService;
 use App\Service\EmployeeService;
 use App\Service\IdentifierService;
 use App\Service\ImportService;
@@ -26,19 +27,14 @@ final class AdminController
         $this->auth->requireRole('MODERATOR'); $date=EmployeeService::date($request->query->get('date',EmployeeService::today()));
         $dashboard=$this->attendance->dashboard($date);
         $chartDays=min(14,max(1,(int)$this->settingsService->get('report_max_days',366)));
-        $from=(new \DateTimeImmutable($date,new \DateTimeZone('Asia/Sakhalin')))->modify('-'.($chartDays-1).' days'); $chart=[];
-        for ($i=0;$i<$chartDays;$i++) { $day=$from->modify('+'.$i.' days')->format('Y-m-d'); $chart[$day]=['date'=>$day,'expected'=>0,'arrived'=>0,'late'=>0,'missing'=>0]; }
-        foreach ($this->attendance->period($from->format('Y-m-d'),$date) as $row) {
-            $day=$row['work_date']??$row['date']??''; if (empty($row['is_working']) || !isset($chart[$day])) { continue; }
-            ++$chart[$day]['expected'];
-            $flags=array_values(array_filter($row['flags']??[],static fn(array $flag):bool=>empty($flag['suppressed']) && empty($flag['private'])));
-            $kinds=array_column($flags,'kind');
-            $arrivalChanges=array_filter($row['changes']??[],static fn(array $change):bool=>($change['event_type']??'')==='arrival');
-            if (($row['raw_values']['arrival']??null)!==null || (($row['values']['arrival']??null)!==null && !$arrivalChanges && !in_array('MISSING_ARRIVAL',$kinds,true))) { ++$chart[$day]['arrived']; }
-            if (array_intersect($kinds,['MISSING_ARRIVAL','MISSING_DEPARTURE','NO_MARKS'])) { ++$chart[$day]['missing']; }
-            if (in_array('LATE_ARRIVAL',$kinds,true)) { ++$chart[$day]['late']; }
-        }
-        return $this->web->render('admin/dashboard.html.twig',$dashboard+['date'=>$date,'summary'=>$dashboard['summary']??$dashboard,'rows'=>$dashboard['rows']??[],'chart'=>array_values($chart)]);
+        $from=(new \DateTimeImmutable($date,new \DateTimeZone('Asia/Sakhalin')))->modify('-'.($chartDays-1).' days'); $dates=[];
+        for ($i=0;$i<$chartDays;$i++) { $dates[]=$from->modify('+'.$i.' days')->format('Y-m-d'); }
+        $charts=DashboardChartService::build($this->attendance->period($from->format('Y-m-d'),$date),$dates,$date);
+        $selected=$charts['chart'][count($charts['chart'])-1];
+        $dashboard['summary']['arrivals']=$selected['arrived'];
+        $dashboard['summary']['missing']=$selected['missing'];
+        $dashboard['summary']['present']=count(array_filter($dashboard['rows'],static fn(array $row):bool=>!empty($row['is_working']) && empty($row['is_guard']) && empty($row['on_leave']) && !empty($row['present'])));
+        return $this->web->render('admin/dashboard.html.twig',$dashboard+['chart_from'=>$from->format('Y-m-d'),'chart_days'=>$chartDays]+$charts);
     }
 
     public function employees(Request $request): Response
@@ -59,6 +55,7 @@ final class AdminController
     public function employeeSave(Request $request): Response
     {
         $actor=$this->write($request); $data=Input::data($request); $creating=trim((string)($data['id']??''))==='';
+        if (!empty($data['is_guard_present'])) { $data['is_guard']=$data['is_guard']??0; }
         $employee=$this->database->transaction(function()use($data,$creating,$actor):array {
             $employee=$this->employeeService->save($data,(int)$actor['id']);
             if ($creating && (int)$employee['active']===1) {
@@ -106,7 +103,7 @@ final class AdminController
                 case 'missing_after_minutes': case 'close_after_minutes': $value=$this->integer($value,0,240); break;
                 case 'report_max_days': $value=$this->integer($value,1,366); break;
                 case 'extra_events': case 'badge_position': $value=EmployeeService::bool($value)===1; break;
-                case 'auto_start': case 'auto_cutover': if (!is_string($value) || !preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D',$value)) { throw new \InvalidArgumentException('Время в формате HH:MM'); } break;
+                case 'auto_start': case 'auto_cutover': if (!is_string($value) || !preg_match('/^(?:[01]\d|2[0-3]):[0-5]\d$/D',$value)) { throw new \InvalidArgumentException('Время в формате ЧЧ:ММ'); } break;
                 case 'night_event': if (!in_array($value,['arrival','departure'],true)) { throw new \InvalidArgumentException('Неизвестная ночная метка'); } break;
                 case 'theme': if (!in_array($value,['light','dark','system'],true)) { throw new \InvalidArgumentException('Неизвестная тема'); } break;
                 case 'badge_orientation': if (!in_array($value,['portrait','landscape'],true)) { throw new \InvalidArgumentException('Неизвестная ориентация'); } break;
@@ -152,12 +149,12 @@ final class AdminController
         $this->auth->requireRole('MODERATOR');
         $articles=[
             ['title'=>'Отметиться без карточки','text'=>'Откройте ручной режим, введите свой ID и нажмите «Записать сейчас». PIN сотрудника не нужен; время назначает сервер.'],
-            ['title'=>'Приход, уход и другие отметки','text'=>'AUTO: с 05:00 до 12:00 приход, с 12:00 уход; ночное правило задано настройкой. Для необычного прохода выберите метку. Обед и уважительный уход видны при включении дополнительных событий.'],
-            ['title'=>'Сотрудники и доступ','text'=>'Новые сотрудники получают случайный код VVE; прежние числовые пропуска продолжают работать. Увольнение сохраняет историю. Перевыпуск меняет код у того же сотрудника и отключает прежний QR, не удаляя записи. Перед перевыпуском необходимо подтвердить отзыв прежнего Wallet. ADMIN меняет роли, MODERATOR смотрит табель и отчёты. Вход использует действующий код пропуска и пароль.'],
-            ['title'=>'Графики и календарь','text'=>'Назначьте группу с даты. Отпуск, сокращённый или рабочий выходной день задайте исключением. Изменение новой версии графика не переписывает прошлые расчёты.'],
+            ['title'=>'Приход, уход и другие отметки','text'=>'Автоматически: с 05:00 до 12:00 приход, с 12:00 уход; ночное правило задано настройкой. Для необычного прохода выберите метку. Обед и уважительный уход видны при включении дополнительных событий.'],
+            ['title'=>'Сотрудники и доступ','text'=>'Новые сотрудники получают случайный код VVE; прежние числовые пропуска продолжают работать. Увольнение сохраняет историю. Перевыпуск меняет код у того же сотрудника и отключает прежний QR, не удаляя записи. Перед перевыпуском необходимо подтвердить отзыв прежнего Wallet. Администратор меняет роли, модератор смотрит табель и отчёты. Вход использует действующий код пропуска и пароль.'],
+            ['title'=>'Графики и календарь','text'=>'Назначьте группу с даты. Отпуск оформите в разделе «Отпуска», сокращённый или рабочий выходной день задайте исключением. Изменение новой версии графика не переписывает прошлые расчёты.'],
             ['title'=>'Импорт','text'=>'CSV, XLSX или XLS: ID, ФИО либо Фамилия/Имя/Отчество, Должность, Активен. Сначала проверьте предпросмотр. «Только добавить» сохраняет существующих; «Обновить по ID» показывает различия. Тот же файл не создаёт повторных людей. Формулы не принимаются.'],
-            ['title'=>'Печать и калибровка','text'=>'Выберите сотрудников, макет и лист. Координаты заданы в миллиметрах. Проверьте перекрытия и границы, печатайте PDF в 100% масштабе. Смещение принтера исправляется offset X/Y; масштаб — настройкой принтера.'],
-            ['title'=>'NFC','text'=>'ADMIN выбирает сотрудника и привязывает стабильный UID карты. UID не равен ID. Режим обучения не пишет приход. Утерянную карту отзовите; QR и ручной ввод продолжают работать. Считыватель должен быть настроен и испытан.'],
+            ['title'=>'Печать и калибровка','text'=>'Выберите сотрудников, макет и лист. Координаты заданы в миллиметрах. Проверьте перекрытия и границы, печатайте PDF в 100% масштабе. Смещение принтера исправляется настройками по X/Y; масштаб — настройкой принтера.'],
+            ['title'=>'NFC','text'=>'Администратор выбирает сотрудника и привязывает стабильный UID карты. UID не равен ID. Режим обучения не пишет приход. Утерянную карту отзовите; QR и ручной ввод продолжают работать. Считыватель должен быть настроен и испытан.'],
             ['title'=>'Отчёт','text'=>'Выберите период и сотрудника. XLSX, CSV и PDF показывают действующие времена и доступные признаки. Если период слишком велик для XLSX/PDF, сократите период или выберите CSV.'],
         ];
         return $this->web->render('admin/help.html.twig',['articles'=>$articles]);

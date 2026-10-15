@@ -59,9 +59,13 @@ final class RootController
     public function attendance(Request $request):Response
     {
         $this->auth->requireRole('MODERATOR');$from=(string)$request->query->get('from',date('Y-m-01'));$to=(string)$request->query->get('to',date('Y-m-d'));$id=(int)$request->query->get('employee_id',0);
-        $period=$this->attendance->period($from,$to,$id?:null);$finding=(string)$request->query->get('finding','');
+        $maxDays=(int)(new \App\Service\Settings($this->database))->get('report_max_days',366);
+        $navigation=\App\Service\AttendanceDayNavigation::build($from,$to,(string)$request->query->get('day',''),date('Y-m-d'),$maxDays);
+        $period=$this->attendance->period($navigation['day'],$navigation['day'],$id?:null);$finding=(string)$request->query->get('finding','');
         $rows=\App\Service\AttendanceFilter::apply($period['rows']??$period,$finding);
-        return $this->web->render('admin/attendance.html.twig',['rows'=>$rows,'summary'=>$period['summary']??[],'from'=>$from,'to'=>$to,'employees'=>$this->employees->list(['active'=>'all']),'filters'=>['employee_id'=>$id?:'','finding'=>$finding],'employee_id'=>$id]);
+        $base=['from'=>$from,'to'=>$to,'employee_id'=>$id?:'','finding'=>$finding];
+        foreach(['older','newer','latest','today'] as $key){$navigation[$key.'_url']=$navigation[$key]!==null?'/admin/attendance?'.http_build_query($base+['day'=>$navigation[$key]],'','&',PHP_QUERY_RFC3986):null;}
+        return $this->web->render('admin/attendance.html.twig',['rows'=>$rows,'summary'=>$period['summary']??[],'from'=>$from,'to'=>$to,'navigation'=>$navigation,'employees'=>$this->employees->list(['active'=>'all']),'filters'=>['employee_id'=>$id?:'','finding'=>$finding],'employee_id'=>$id]);
     }
     public function adminDay(Request $request):Response{$this->auth->requireRole('MODERATOR');return $this->day($request);}
     public function adminManual(Request $request):Response{$user=$this->auth->requireRole('ADMIN');$this->auth->checkCsrf($request);return $this->web->json($this->attendance->manual($this->manualPayload($request),(int)$user['id']));}

@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS employees (
     patronymic VARCHAR(160) NOT NULL DEFAULT '',
     legacy_full_name VARCHAR(255) NULL,
     position VARCHAR(255) NOT NULL DEFAULT '',
+    is_guard TINYINT NOT NULL DEFAULT 0,
     active TINYINT NOT NULL DEFAULT 1,
     is_service TINYINT NOT NULL DEFAULT 0,
     admin_role ENUM('NONE','MODERATOR','ADMIN') NOT NULL DEFAULT 'NONE',
@@ -376,4 +377,25 @@ CREATE TABLE IF NOT EXISTS wallet_pass_history (
     KEY wallet_history_employee (employee_id, archived_at),
     CONSTRAINT wallet_history_employee_fk FOREIGN KEY (employee_id) REFERENCES employees(id),
     CONSTRAINT wallet_history_actor_fk FOREIGN KEY (actor_employee_id) REFERENCES employees(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Additive vacation module. Apply this file alone to an existing Staff database.
+CREATE TABLE IF NOT EXISTS employee_leaves (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    employee_id INT UNSIGNED NOT NULL,
+    kind VARCHAR(24) NOT NULL DEFAULT 'vacation',
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    note VARCHAR(1000) NOT NULL DEFAULT '',
+    active TINYINT NOT NULL DEFAULT 1,
+    version INT UNSIGNED NOT NULL DEFAULT 1,
+    actor_employee_id INT UNSIGNED NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    revoked_at DATETIME NULL,
+    PRIMARY KEY (id),
+    KEY leaves_employee_dates (employee_id, active, start_date, end_date),
+    KEY leaves_period (active, start_date, end_date),
+    CONSTRAINT leaves_employee FOREIGN KEY (employee_id) REFERENCES employees(id),
+    CONSTRAINT leaves_actor FOREIGN KEY (actor_employee_id) REFERENCES employees(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -16,8 +16,15 @@ final class EmployeeService
         $where = ['e.is_service = 0']; $params = [];
         $q = trim((string)($filters['q'] ?? ''));
         if ($q !== '') {
-            $where[] = "(CONCAT_WS(' ',e.surname,e.given_name,e.patronymic) LIKE ? OR e.position LIKE ? OR e.pass_code LIKE ?)";
-            array_push($params, '%'.$q.'%', '%'.$q.'%', '%'.strtoupper($q).'%');
+            $search = "(CONCAT_WS(' ',e.surname,e.given_name,e.patronymic) LIKE ? OR e.position LIKE ?";
+            array_push($params, '%'.$q.'%', '%'.$q.'%');
+            // A non-ASCII query cannot match an ASCII pass code. Comparing it anyway
+            // makes MariaDB reject the entire search with an illegal collation mix.
+            if (preg_match('/^[\x00-\x7F]+$/D', $q)) {
+                $search .= ' OR e.pass_code LIKE ?';
+                $params[] = '%'.strtoupper($q).'%';
+            }
+            $where[] = $search.')';
         }
         $active = $filters['active'] ?? $filters['filter'] ?? 'all';
         if (in_array((string)$active, ['1','active','0','inactive'], true)) {
@@ -30,7 +37,7 @@ final class EmployeeService
         $limit = isset($filters['limit']) ? (int)$filters['limit'] : null;
         if ($limit !== null && ($limit < 1 || $limit > 1000)) { throw new \InvalidArgumentException('Размер страницы: 1–1000'); }
         $offset = max(0, (int)($filters['offset'] ?? 0));
-        $sql = 'SELECT e.id,e.pass_code,e.surname,e.given_name,e.patronymic,e.legacy_full_name,e.position,e.active,e.admin_role,e.auth_version,e.started_on,e.ended_on,e.version, '.
+        $sql = 'SELECT e.id,e.pass_code,e.surname,e.given_name,e.patronymic,e.legacy_full_name,e.position,e.is_guard,e.active,e.admin_role,e.auth_version,e.started_on,e.ended_on,e.version, '.
             '(SELECT sa.group_id FROM schedule_assignments sa WHERE sa.employee_id=e.id AND sa.valid_from<=? AND (sa.valid_to IS NULL OR sa.valid_to>=?) ORDER BY sa.valid_from DESC LIMIT 1) group_id, '.
             '(SELECT sg.name FROM schedule_assignments sa JOIN schedule_groups sg ON sg.id=sa.group_id WHERE sa.employee_id=e.id AND sa.valid_from<=? AND (sa.valid_to IS NULL OR sa.valid_to>=?) ORDER BY sa.valid_from DESC LIMIT 1) group_name '.
             'FROM employees e WHERE '.implode(' AND ', $where).' ORDER BY e.id'.($limit === null ? '' : ' LIMIT '.$limit.' OFFSET '.$offset);
@@ -45,7 +52,7 @@ final class EmployeeService
 
     public function find(int $id, bool $includeService = false): ?array
     {
-        $row = $this->database->one('SELECT id,pass_code,surname,given_name,patronymic,legacy_full_name,position,active,is_service,admin_role,auth_version,started_on,ended_on,version FROM employees WHERE id=?'.($includeService ? '' : ' AND is_service=0'), [$id]);
+        $row = $this->database->one('SELECT id,pass_code,surname,given_name,patronymic,legacy_full_name,position,is_guard,active,is_service,admin_role,auth_version,started_on,ended_on,version FROM employees WHERE id=?'.($includeService ? '' : ' AND is_service=0'), [$id]);
         return $row ? $this->decorate($row) : null;
     }
 
@@ -121,6 +128,9 @@ final class EmployeeService
         if ($legacy!==null && (!is_string($legacy) || mb_strlen($legacy)>255 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/u',$legacy))) { throw new \InvalidArgumentException('Некорректная исходная строка ФИО'); }
         $values['legacy_full_name']=$legacy;
         if ($before) { $values['pass_code']=IdentifierService::codeOf($before); }
+        // This current classification exempts a floating guard schedule, including past days.
+        // Directory imports neither enable nor reset attendance-control exemptions.
+        $values['is_guard'] = $import ? (int)($before['is_guard'] ?? 0) : self::bool($get('is_guard', 0));
         $values['active'] = self::bool($get('active', 1));
         $values['admin_role'] = strtoupper((string)$get('admin_role', 'NONE'));
         if (!in_array($values['admin_role'], ['NONE','MODERATOR','ADMIN'], true)) { throw new \InvalidArgumentException('Некорректная роль'); }
@@ -289,7 +299,7 @@ final class EmployeeService
     }
 
     private function safe(array $row): array { unset($row['password_hash'],$row['enrollment_pin_hash'],$row['password'],$row['enrollment_pin']); return $row; }
-    private function decorate(array $row): array { $row=$this->safe($row); $row['pass_code']=$row['display_id']=IdentifierService::codeOf($row); $row['name']=$row['full_name']=trim(implode(' ',array_filter([$row['surname']??'',$row['given_name']??'',$row['patronymic']??''], static fn($v)=>$v!=='' && $v!==null))); return $row; }
+    private function decorate(array $row): array { $row=$this->safe($row); $row['is_guard']=(int)($row['is_guard']??0); $row['pass_code']=$row['display_id']=IdentifierService::codeOf($row); $row['name']=$row['full_name']=trim(implode(' ',array_filter([$row['surname']??'',$row['given_name']??'',$row['patronymic']??''], static fn($v)=>$v!=='' && $v!==null))); return $row; }
     private function newCode(): string { for($attempt=0;$attempt<20;$attempt++) { $code=IdentifierService::randomCode(); if ((int)$this->database->scalar('SELECT COUNT(*) FROM employees WHERE pass_code=?',[$code])===0 && (int)$this->database->scalar('SELECT COUNT(*) FROM employee_credentials WHERE value=?',[$code])===0) { return $code; } } throw new \RuntimeException('Не удалось выдать уникальный код пропуска'); }
     public static function utc(): string { return (new \DateTimeImmutable('now',new \DateTimeZone('UTC')))->format('Y-m-d H:i:s'); }
     public static function today(): string { return (new \DateTimeImmutable('now',new \DateTimeZone('Asia/Sakhalin')))->format('Y-m-d'); }

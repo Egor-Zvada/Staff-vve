@@ -48,7 +48,7 @@ final class ExportService
                 $flags=[]; foreach (($row['flags']??[]) as $flag) { if (is_array($flag) && empty($flag['suppressed']) && empty($flag['private'])) { $flags[]=(string)($flag['label']??$flag['kind']??''); } }
                 $raw=$row['raw_values']??[];
                 $passCode=(string)($employee['pass_code']??$employee['display_id']??$row['pass_code']??$row['display_id']??IdentifierService::numericLegacy((int)($employee['id']??$row['employee_id']??0)));
-                $rows[]=[(string)($row['work_date']??$row['date']??$day),$passCode,$name,(string)($employee['position']??$row['position']??''),$this->time($values,'arrival'),$this->time($values,'departure'),$this->time($values,'lunch_out'),$this->time($values,'lunch_in'),$this->time($values,'excused_out'),implode('; ',$flags),$this->time($raw,'arrival'),$this->time($raw,'departure'),(string)($row['group_name']??''),!empty($row['is_working']) ? 'Да' : 'Нет'];
+                $rows[]=[(string)($row['work_date']??$row['date']??$day),$passCode,$name,(string)($employee['position']??$row['position']??''),$this->time($values,'arrival'),$this->time($values,'departure'),$this->time($values,'lunch_out'),$this->time($values,'lunch_in'),$this->time($values,'excused_out'),implode('; ',$flags),$this->time($raw,'arrival'),$this->time($raw,'departure'),(string)(!empty($row['on_leave'])?($row['leave_label']??'Отпуск'):(!empty($row['is_guard'])?($row['tracking_label']??'Охранник · без контроля графика'):($row['group_name']??''))),!empty($row['is_working']) ? 'Да' : 'Нет'];
             }
             yield $day=>$rows;
         }

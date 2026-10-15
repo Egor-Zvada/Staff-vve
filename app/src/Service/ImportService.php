@@ -17,7 +17,7 @@ final class ImportService
 
     public function preview(UploadedFile $file, string $mode, int $actorId): array
     {
-        if (!$file->isValid() || $file->getSize() > 2*1024*1024) { throw new \InvalidArgumentException('Нужен корректный файл не больше 2 MiB'); }
+        if (!$file->isValid() || $file->getSize() > 2*1024*1024) { throw new \InvalidArgumentException('Нужен корректный файл не больше 2 МиБ'); }
         if (!in_array($mode, ['add_only','merge'], true)) { throw new \InvalidArgumentException('Некорректный режим импорта'); }
         $extension = strtolower($file->getClientOriginalExtension());
         if (!in_array($extension, ['csv','xlsx','xls'], true)) { throw new \InvalidArgumentException('Поддерживаются CSV, XLSX и XLS'); }
@@ -32,7 +32,7 @@ final class ImportService
         ];
         foreach ($headers as $i=>$header) {
             $normalized=preg_replace('/[^a-zа-я0-9]/u','',mb_strtolower(str_replace(['ё',"\xEF\xBB\xBF"],['е',''],trim((string)$header))));
-            foreach ($aliases as $key=>$names) { if (in_array($normalized,$names,true)) { if (isset($map[$key])) { throw new \InvalidArgumentException('Повторная колонка '.$key); } $map[$key]=$i; } }
+            foreach ($aliases as $key=>$names) { if (in_array($normalized,$names,true)) { if (isset($map[$key])) { throw new \InvalidArgumentException('Повторная колонка '.(['id'=>'ID','pass_code'=>'Код пропуска','full_name'=>'ФИО','surname'=>'Фамилия','given_name'=>'Имя','patronymic'=>'Отчество','position'=>'Должность','active'=>'Статус','dismissed'=>'Уволен'][$key] ?? 'Сотрудник')); } $map[$key]=$i; } }
         }
         if (!isset($map['full_name']) && (!isset($map['surname']) || !isset($map['given_name']))) { throw new \InvalidArgumentException('Укажите ФИО либо отдельные колонки Фамилия и Имя'); }
         $rows=[]; $seen=[]; $summary=['create'=>0,'update'=>0,'skip'=>0,'errors'=>0,'total'=>0];
@@ -56,7 +56,7 @@ final class ImportService
                 if ($rawPassCode!=='' && $rawColumnId!=='' && $rawPassCode!==$rawColumnId && !(preg_match('/^\d{1,10}$/D',$rawColumnId) && (int)$rawColumnId===$id)) { throw new \InvalidArgumentException('Колонки ID и код пропуска относятся к разным значениям'); }
                 if ($id && isset($seen[$id])) { throw new \InvalidArgumentException('ID повторяется в файле'); } if ($id) { $seen[$id]=true; }
                 $full=$get('full_name'); $parts=preg_split('/\s+/u',$full, -1,PREG_SPLIT_NO_EMPTY) ?: [];
-                if (!isset($map['surname']) && count($parts)>3) { throw new \InvalidArgumentException('Составное ФИО: укажите отдельные фамилию/имя/отчество, исходная строка сохранена в preview'); }
+                if (!isset($map['surname']) && count($parts)>3) { throw new \InvalidArgumentException('Составное ФИО: укажите отдельные фамилию/имя/отчество, исходная строка сохранена в предпросмотре'); }
                 $active=isset($map['active']) ? $this->active($get('active')) : (isset($map['dismissed']) ? $this->dismissed($get('dismissed')) : 1);
                 $data=['id'=>$id,'surname'=>$get('surname',$parts[0]??''),'given_name'=>$get('given_name',$parts[1]??''),'patronymic'=>$get('patronymic',implode(' ',array_slice($parts,2))),'position'=>$get('position'),'active'=>$active];
                 if (isset($map['full_name'])) { $data['legacy_full_name']=(string)($cells[$map['full_name']]??''); if (mb_strlen($data['legacy_full_name'])>255 || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F]/u',$data['legacy_full_name'])) { throw new \InvalidArgumentException('Некорректное исходное ФИО или длина больше 255 символов'); } }

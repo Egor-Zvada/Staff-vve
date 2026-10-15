@@ -13,7 +13,7 @@ final class Kernel extends BaseKernel
     {
         $container->extension('framework', [
             'secret'=>'%env(APP_SECRET)%', 'default_locale'=>'ru', 'router'=>['utf8'=>true],
-            'trusted_hosts'=>['^staff\\.vve\\.local$','^staff$','^192\\.168\\.110\\.202$','^localhost$','^127\\.0\\.0\\.1$'],
+            'trusted_hosts'=>['^staff\\.vve\\.local$','^staff$','^192\\.168\\.110\\.202$','^192\\.168\\.110\\.70$','^localhost$','^127\\.0\\.0\\.1$'],
             'session'=>['name'=>$this->getEnvironment()==='qa'?'STAFFV2QASESSID':'STAFFV2SESSID','storage_factory_id'=>'session.storage.factory.native','save_path'=>'%kernel.project_dir%/var/sessions','cookie_secure'=>true,'cookie_httponly'=>true,'cookie_samesite'=>'lax','gc_maxlifetime'=>28800],
             'php_errors'=>['log'=>true], 'http_method_override'=>false,
         ]);
@@ -35,6 +35,7 @@ final class Kernel extends BaseKernel
             ['admin','/admin',['GET'],'AdminController','index'],['employees','/admin/employees',['GET'],'AdminController','employees'],['employee_save','/admin/employees/save',['POST'],'AdminController','employeeSave'],['employee_deactivate','/admin/employees/deactivate',['POST'],'AdminController','employeeDeactivate'],
             ['employee_rotate_passcode','/admin/employees/rotate-passcode',['POST'],'AdminController','employeeRotatePasscode'],
             ['schedules','/admin/schedules',['GET'],'AdminController','schedules'],['schedule_save','/admin/schedules/save',['POST'],'AdminController','scheduleSave'],['assignment_save','/admin/schedules/assign',['POST'],'AdminController','assignmentSave'],['calendar_save','/admin/schedules/calendar',['POST'],'AdminController','calendarSave'],
+            ['leaves','/admin/leaves',['GET'],'LeaveController','index'],['leave_save','/admin/leaves/save',['POST'],'LeaveController','save'],['leave_revoke','/admin/leaves/revoke',['POST'],'LeaveController','revoke'],
             ['settings','/admin/settings',['GET'],'AdminController','settings'],['settings_save','/admin/settings',['POST'],'AdminController','settingsSave'],
             ['credentials','/admin/credentials',['GET'],'AdminController','credentials'],['credential_save','/admin/credentials/save',['POST'],'AdminController','credentialSave'],['credential_revoke','/admin/credentials/revoke',['POST'],'AdminController','credentialRevoke'],
             ['imports','/admin/import',['GET'],'AdminController','imports'],['import_preview','/admin/import/preview',['POST'],'AdminController','importPreview'],['import_commit','/admin/import/commit',['POST'],'AdminController','importCommit'],['export','/admin/export',['GET'],'AdminController','export'],['help','/admin/help',['GET'],'AdminController','help'],['status','/admin/status',['GET'],'AdminController','status'],

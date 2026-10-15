@@ -13,6 +13,7 @@ final class AttendanceService
 {
     private const FIELDS = ['arrival', 'departure', 'lunch_out', 'lunch_in', 'excused_out'];
     private const DERIVED = ['LATE_ARRIVAL', 'EARLY_DEPARTURE', 'MISSING_ARRIVAL', 'MISSING_DEPARTURE', 'NO_MARKS', 'INCOMPLETE_BREAK', 'INVALID_ORDER'];
+    private const STATUS_LABELS = ['present'=>'На работе по отметкам','complete'=>'Приход и уход отмечены','arrival_only'=>'Только приход','departure_only'=>'Уход без прихода','no_marks'=>'Нет отметок','guard'=>'Охранник · без контроля графика','on_leave'=>'В отпуске'];
     private readonly Closure $clock;
     private readonly IdentifierService $identifiers;
 
@@ -46,7 +47,10 @@ final class AttendanceService
             $context = $this->context($payload) + ['credential_id' => $credentialId, 'actor_employee_id' => $actorId];
             $this->db->insert('attendance_events', ['employee_id' => $employeeId, 'work_date' => $date, 'event_type' => $type, 'event_at' => $this->stamp($now), 'received_at' => $this->stamp($now), 'source' => $actualSource, 'request_id' => $requestId, 'private' => 0, 'context_json' => $this->json($context)]);
             $eventId = (int) $this->db->db->lastInsertId();
-            $day = $this->project($employeeId, $date, $this->decode($day['overrides_json']), (int) $day['version'] + 1, $plan);
+            $overrides = $this->decode($day['overrides_json']);
+            // A new scan replaces only its field in an explicitly cleaned baseline.
+            if (!empty($overrides[$type]['owner_clean'])) { unset($overrides[$type]); }
+            $day = $this->project($employeeId, $date, $overrides, (int) $day['version'] + 1, $plan);
             $this->evaluate($employeeId, $date, $day, $plan, $now);
             return $this->markResponse($employee, $date, $type, $now, false, $eventId);
         });
@@ -144,7 +148,7 @@ final class AttendanceService
                 $id = (int) $person['id'];
                 $this->recheckEmployee($id, $date);
                 $row = $this->serializeDay($id, $date);
-                if ($row['is_working'] || $row['has_values'] || $row['events'] !== [] || $row['changes'] !== []) {
+                if ($row['is_working'] || $row['on_leave'] || $row['is_guard'] || $row['has_values'] || $row['events'] !== [] || $row['changes'] !== []) {
                     $rows[] = $row;
                 }
             }
@@ -186,9 +190,12 @@ final class AttendanceService
         $employeeId = $this->positiveId($payload['employee_id'] ?? '');
         $date = ScheduleService::validateDate((string) ($payload['work_date'] ?? $payload['date'] ?? ''));
         $reason = trim((string) ($payload['reason'] ?? ''));
-        if ($reason === '' || mb_strlen($reason) > 2000) { throw new DomainException('Нужна внутренняя причина длиной до 2000 символов.', 400); }
+        if (mb_strlen($reason) > 2000) { throw new DomainException('Примечание не может быть длиннее 2000 символов.', 400); }
         $action = strtolower((string) ($payload['action'] ?? ''));
-        if (!in_array($action, ['suppress', 'correct', 'restore'], true)) { throw new DomainException('Неизвестное служебное действие.', 400); }
+        if (!in_array($action, ['clear_and_correct', 'suppress', 'correct', 'restore'], true)) { throw new DomainException('Неизвестное служебное действие.', 400); }
+        if (($action === 'clear_and_correct' && !array_key_exists('version', $payload)) || (array_key_exists('version', $payload) && (!is_scalar($payload['version']) || !preg_match('/^\d+$/D', (string) $payload['version'])))) {
+            throw new DomainException('Нужна актуальная версия выбранного дня.', 400);
+        }
         $payload['request_id'] ??= 'owner-'.bin2hex(random_bytes(16));
         $now = $this->now();
         return $this->request($payload, ['action' => 'owner_'.$action, 'payload' => $payload], function (string $requestId) use ($payload, $employeeId, $date, $reason, $action, $now): array {
@@ -199,7 +206,21 @@ final class AttendanceService
             $plan = $this->dayPlan($day);
             $overrides = $this->decode($day['overrides_json']);
             $affected = ['flags' => 0, 'changes' => 0, 'events' => 0];
-            if ($action === 'correct') {
+            if ($action === 'clear_and_correct') {
+                $values = $this->normalizeValues($payload['values'] ?? null);
+                if (count($values) !== count(self::FIELDS) || array_diff(self::FIELDS, array_keys($values)) !== []) {
+                    throw new DomainException('Передайте все пять полей дня; пустое время очищает поле.', 400);
+                }
+                // Keep a standalone private snapshot, then remove every day record in FK order.
+                $this->db->exec('DELETE FROM private_resolutions WHERE employee_id = ? AND work_date = ?', [$employeeId, $date]);
+                foreach (['flags' => 'attendance_flags', 'changes' => 'attendance_changes', 'events' => 'attendance_events'] as $key => $table) {
+                    $affected[$key] = $this->db->exec('DELETE FROM '.$table.' WHERE employee_id = ? AND work_date = ?', [$employeeId, $date]);
+                }
+                $overrides = ['_owner_clean' => ['at' => $this->stamp($now), 'request_id' => $requestId]];
+                foreach ($values as $field => $input) {
+                    $overrides[$field] = ['value' => $input === null ? null : $this->inputMoment($date, $input)->format('Y-m-d H:i:s'), 'private' => true, 'owner_clean' => true];
+                }
+            } elseif ($action === 'correct') {
                 $values = $this->normalizeValues($payload['values'] ?? null);
                 if ($values === []) { throw new DomainException('Выберите официальные значения для изменения.', 400); }
                 $this->ensureDay($employeeId, $date);
@@ -229,6 +250,7 @@ final class AttendanceService
             $this->evaluate($employeeId, $date, $day, $plan, $now);
             $after = $this->privateSnapshot($employeeId, $date);
             $this->db->insert('private_service_events', ['action' => $action, 'employee_id' => $employeeId, 'work_date' => $date, 'before_json' => $this->json($before), 'after_json' => $this->json($after), 'reason' => $reason, 'created_at' => $this->stamp($now)]);
+            if ($action === 'clear_and_correct') { $this->cleanRequestResponses($employeeId, $date); }
             return ['success' => true, 'affected' => $affected, 'day' => $this->privateDay($employeeId, $date), 'version' => (int) $day['version']];
         });
     }
@@ -242,8 +264,8 @@ final class AttendanceService
         $ordinary['changes'] = array_map(fn (array $change): array => $this->serializeChange($change, true), $snapshot['changes']);
         $ordinary['flags'] = array_map(fn (array $flag): array => $this->serializeFlag($flag, true), $snapshot['flags']);
         $ordinary['resolutions'] = $this->db->all('SELECT * FROM private_resolutions WHERE employee_id = ? AND work_date = ? ORDER BY id', [$id, $date]);
-        $ordinary['service_events'] = $this->db->all('SELECT * FROM private_service_events WHERE employee_id = ? AND work_date = ? ORDER BY id', [$id, $date]);
-        foreach (['resolutions', 'service_events'] as $key) {
+        // Recovery snapshots are separate from the current day and never refill its detail.
+        foreach (['resolutions'] as $key) {
             foreach ($ordinary[$key] as &$record) { $record['created_at'] = $this->iso($record['created_at']); }
             unset($record);
         }
@@ -262,7 +284,14 @@ final class AttendanceService
             if ($request === null || !hash_equals((string) $request['payload_hash'], $hash)) { throw new DomainException('request_id уже использован для другой операции.', 409); }
             if ($request['response_json'] !== null) {
                 $saved = $this->decode($request['response_json']);
-                return str_starts_with((string) ($hashPayload['action'] ?? ''), 'owner_') ? $saved : $this->visibleReplay($saved);
+                if (str_starts_with((string) ($hashPayload['action'] ?? ''), 'owner_')) {
+                    if (isset($saved['day']['employee_id'], $saved['day']['work_date'])) {
+                        $saved['day'] = $this->privateDay((int) $saved['day']['employee_id'], (string) $saved['day']['work_date']);
+                        $saved['version'] = $saved['day']['version'];
+                    }
+                    return $saved;
+                }
+                return $this->visibleReplay($saved);
             }
             $result = $work($id);
             $this->db->exec('UPDATE operation_requests SET response_json = ? WHERE request_id = ?', [$this->json($result), $id]);
@@ -369,7 +398,17 @@ final class AttendanceService
 
     private function evaluate(int $id, string $date, array $day, array $plan, DateTimeImmutable $now): void
     {
+        // A dated approved vacation exempts every finding, including later-entered corrections.
+        if (!empty($plan['on_leave']) || !empty($plan['is_guard'])) {
+            $this->db->exec('UPDATE attendance_flags SET active = 0 WHERE employee_id = ? AND work_date = ?', [$id, $date]);
+            return;
+        }
+        // These findings describe retained change evidence, so revoking a vacation restores them.
+        $this->db->exec('UPDATE attendance_flags SET active = 1 WHERE employee_id = ? AND work_date = ? AND kind IN (?,?,?)', [$id, $date, 'CORRECTION', 'PRIOR_DAY_CHANGE', 'EARLIER_TIME_CLAIM']);
         $events = $this->db->all('SELECT * FROM attendance_events WHERE employee_id = ? AND work_date = ? ORDER BY event_at, id', [$id, $date]);
+        $overrides = $this->decode($day['overrides_json']);
+        // Explicit cleanup is a baseline, not a day-wide exemption for future evidence.
+        if (isset($overrides['_owner_clean']) && !array_filter($events, static fn (array $event): bool => !(bool) $event['private']) && !$this->db->scalar('SELECT COUNT(*) FROM attendance_changes WHERE employee_id = ? AND work_date = ? AND private = 0 AND source <> ?', [$id, $date, 'owner_adjust'])) { return; }
         $allRaw = $this->rawSelection($events);
         $raw = $this->rawSelection(array_values(array_filter($events, static fn (array $event): bool => !(bool) $event['private'])));
         $this->db->exec('UPDATE attendance_flags SET active = 0 WHERE employee_id = ? AND work_date = ? AND kind IN ('.implode(',', array_fill(0, count(self::DERIVED), '?')).')', [$id, $date, ...self::DERIVED]);
@@ -377,7 +416,6 @@ final class AttendanceService
         $hash = substr(hash('sha256', $this->json($this->canonical($basis))), 0, 32);
         $arrival = $raw['arrival'] ?? null;
         $departure = $raw['departure'] ?? ($raw['excused_out'] ?? null);
-        $overrides = $this->decode($day['overrides_json']);
         $hasArrival = isset($allRaw['arrival']) || (!empty($overrides['arrival']['private']) && ($overrides['arrival']['value'] ?? null) !== null);
         $hasDeparture = isset($allRaw['departure']) || isset($allRaw['excused_out']) || (!empty($overrides['departure']['private']) && ($overrides['departure']['value'] ?? null) !== null) || (!empty($overrides['excused_out']['private']) && ($overrides['excused_out']['value'] ?? null) !== null);
         $working = (bool) $plan['is_working'];
@@ -434,7 +472,7 @@ final class AttendanceService
         $plan = $this->dayPlan($day);
         $events = $this->db->all('SELECT * FROM attendance_events WHERE employee_id = ? AND work_date = ? AND private = 0 ORDER BY received_at, id', [$id, $date]);
         $changes = $this->db->all('SELECT * FROM attendance_changes WHERE employee_id = ? AND work_date = ? AND private = 0 AND source <> ? ORDER BY received_at, id', [$id, $date, 'owner_adjust']);
-        $flags = $this->db->all('SELECT * FROM attendance_flags WHERE employee_id = ? AND work_date = ? AND active = 1 AND suppressed = 0 AND private = 0 ORDER BY id', [$id, $date]);
+        $flags = !empty($plan['on_leave']) || !empty($plan['is_guard']) ? [] : $this->db->all('SELECT * FROM attendance_flags WHERE employee_id = ? AND work_date = ? AND active = 1 AND suppressed = 0 AND private = 0 ORDER BY id', [$id, $date]);
         $values = [];
         foreach (self::FIELDS as $field) { $values[$field] = $this->displayTime($day[$field.'_at']); }
         $now = $this->now();
@@ -445,10 +483,12 @@ final class AttendanceService
         if ($present && $this->extraEnabled('lunch_out', $plan['policy']) && $this->openLunch($day)) { $present = false; }
         $status = $values['arrival'] !== null && $values['departure'] !== null ? 'complete' : ($values['arrival'] !== null ? 'arrival_only' : ($values['departure'] !== null ? 'departure_only' : 'no_marks'));
         if ($present) { $status = 'present'; }
+        if (!empty($plan['is_guard'])) { $status = 'guard'; }
+        if (!empty($plan['on_leave'])) { $status = 'on_leave'; }
         $fullName = trim(implode(' ', array_filter([(string) $employee['surname'], (string) $employee['given_name'], (string) $employee['patronymic']], static fn (string $part): bool => $part !== '')));
         return ['success' => true, 'id' => $id, 'employee_id' => $id, 'pass_code' => IdentifierService::codeOf($employee), 'display_id' => IdentifierService::codeOf($employee), 'employee' => ['id' => $id, 'name' => $fullName, 'pass_code' => IdentifierService::codeOf($employee), 'display_id' => IdentifierService::codeOf($employee)], 'name' => $fullName, 'full_name' => $fullName, 'surname' => $employee['surname'], 'given_name' => $employee['given_name'], 'patronymic' => $employee['patronymic'], 'position' => $employee['position'], 'active' => (bool) $employee['active'], 'work_date' => $date, 'date' => $date, 'version' => (int) $day['version'], 'values' => $values,
             'arrival' => $values['arrival'], 'departure' => $values['departure'], 'lunch_out' => $values['lunch_out'], 'lunch_in' => $values['lunch_in'], 'excused_out' => $values['excused_out'],
-            'raw_values' => $this->rawValues($events), 'events' => array_map(fn (array $event): array => $this->serializeEvent($event), $events), 'changes' => array_map(fn (array $change): array => $this->serializeChange($change), $changes), 'flags' => array_map(fn (array $flag): array => $this->serializeFlag($flag), $flags), 'status' => $status, 'present' => $present, 'has_values' => count(array_filter($values, static fn (mixed $value): bool => $value !== null)) > 0, 'is_working' => (bool) $plan['is_working'], 'group_name' => $plan['group_name'], 'plan' => $plan];
+            'raw_values' => $this->rawValues($events), 'events' => array_map(fn (array $event): array => $this->serializeEvent($event), $events), 'changes' => array_map(fn (array $change): array => $this->serializeChange($change), $changes), 'flags' => array_map(fn (array $flag): array => $this->serializeFlag($flag), $flags), 'status' => $status, 'status_label' => self::STATUS_LABELS[$status] ?? 'Состояние не определено', 'present' => $present, 'has_values' => count(array_filter($values, static fn (mixed $value): bool => $value !== null)) > 0, 'is_working' => (bool) $plan['is_working'], 'group_name' => $plan['group_name'], 'is_guard' => !empty($plan['is_guard']), 'tracking_label' => $plan['tracking_label'] ?? '', 'on_leave' => !empty($plan['on_leave']), 'leave_id' => $plan['leave_id'] ?? null, 'leave_label' => $plan['leave_label'] ?? '', 'leave_from' => $plan['leave_from'] ?? null, 'leave_to' => $plan['leave_to'] ?? null, 'plan' => $plan];
     }
 
     private function serializeEvent(array $event, bool $private = false): array
@@ -484,25 +524,45 @@ final class AttendanceService
     private function markResponse(array $employee, string $date, string $type, DateTimeImmutable $moment, bool $duplicate, int $eventId): array
     {
         $row = $this->serializeDay((int) $employee['id'], $date);
-        return ['success' => true, 'employee' => $row['employee'], 'event_type' => $type, 'time' => $this->local($moment)->format('H:i:s'), 'date' => $date, 'server_received_at' => $this->local($moment)->format(DATE_ATOM), 'official_time' => $row['values'][$type], 'duplicate' => $duplicate, 'event_id' => $eventId, 'version' => $row['version'], 'flags' => $row['flags']];
+        return ['success' => true, 'employee' => $row['employee'], 'event_type' => $type, 'time' => $this->local($moment)->format('H:i:s'), 'date' => $date, 'server_received_at' => $this->local($moment)->format(DATE_ATOM), 'official_time' => $row['values'][$type], 'duplicate' => $duplicate, 'event_id' => $eventId, 'is_guard' => $row['is_guard'], 'version' => $row['version'], 'flags' => $row['flags']];
     }
 
     private function visibleReplay(array $saved): array
     {
         $id = (int) ($saved['employee']['id'] ?? $saved['day']['employee_id'] ?? 0);
         $date = (string) ($saved['date'] ?? $saved['day']['work_date'] ?? '');
-        if ($id <= 0 || $date === '' || !$this->db->scalar('SELECT COUNT(*) FROM private_service_events WHERE employee_id = ? AND work_date = ?', [$id, $date])) { return $saved; }
+        if ($id <= 0 || $date === '') { return $saved; }
+        $ownerChanged = (bool) $this->db->scalar('SELECT COUNT(*) FROM private_service_events WHERE employee_id = ? AND work_date = ?', [$id, $date]);
+        $leaveChanged = (bool) $this->db->scalar('SELECT COUNT(*) FROM employee_leaves WHERE employee_id = ? AND start_date <= ? AND end_date >= ?', [$id, $date, $date]);
+        $guardChanged = !empty($saved['is_guard']) || !empty($saved['day']['is_guard']) || (bool) $this->db->scalar('SELECT is_guard FROM employees WHERE id = ?', [$id]);
+        if (!$ownerChanged && !$leaveChanged && !$guardChanged) { return $saved; }
+        $this->recheckEmployee($id, $date);
         $published = $this->serializeDay($id, $date);
         if (isset($saved['day'])) { $saved['day'] = $published; }
         $saved['flags'] = $published['flags'];
         $saved['version'] = $published['version'];
-        if (isset($saved['event_id']) && $this->db->scalar('SELECT private FROM attendance_events WHERE id = ?', [(int) $saved['event_id']])) {
+        $event = isset($saved['event_id']) ? $this->db->one('SELECT private FROM attendance_events WHERE id = ?', [(int) $saved['event_id']]) : null;
+        if (isset($saved['event_type']) && (!isset($saved['event_id']) || $event === null || (bool) $event['private'])) {
             $field = (string) $saved['event_type'];
             $saved['time'] = $published['values'][$field] === null ? '' : $published['values'][$field].':00';
             $saved['official_time'] = $published['values'][$field];
             unset($saved['event_id'], $saved['server_received_at']);
         }
         return $saved;
+    }
+
+    private function cleanRequestResponses(int $id, string $date): void
+    {
+        // Retain request hashes as replay tombstones, but remove deleted facts from their caches.
+        $requests = $this->db->all('SELECT request_id, response_json FROM operation_requests WHERE response_json LIKE ? OR response_json LIKE ?', ['%"work_date":"'.$date.'"%', '%"date":"'.$date.'"%']);
+        foreach ($requests as $request) {
+            $saved = $this->decode($request['response_json']);
+            if ((int) ($saved['employee']['id'] ?? $saved['day']['employee_id'] ?? 0) !== $id || (string) ($saved['date'] ?? $saved['day']['work_date'] ?? '') !== $date) { continue; }
+            $isPrivate = isset($saved['affected']);
+            $saved = $this->visibleReplay($saved);
+            if ($isPrivate && isset($saved['day'])) { $saved['day'] = $this->privateDay($id, $date); }
+            $this->db->exec('UPDATE operation_requests SET response_json = ? WHERE request_id = ?', [$this->json($saved), $request['request_id']]);
+        }
     }
 
     private function rawSelection(array $events): array

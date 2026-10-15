@@ -160,6 +160,31 @@ final class ScheduleService
             $plan['is_working'] = false;
             $plan['history_reason'] = 'До начала учёта Staff V2';
         }
+        return $this->applyLeave($plan);
+    }
+
+    /** A fresh overlay also applies to frozen attendance_days.plan_json snapshots. */
+    public function applyLeave(array $plan): array
+    {
+        $plan['schedule_is_working'] = (bool) ($plan['schedule_is_working'] ?? $plan['original_is_working'] ?? $plan['is_working']);
+        $plan['is_working'] = $plan['schedule_is_working'];
+        if (!empty($plan['history_start']) && $plan['work_date'] < $plan['history_start']) {
+            $plan['is_working'] = false;
+        }
+        $leave = $this->db->one('SELECT id, start_date, end_date, version FROM employee_leaves WHERE employee_id = ? AND active = 1 AND start_date <= ? AND end_date >= ? ORDER BY id DESC LIMIT 1', [(int) $plan['employee_id'], (string) $plan['work_date'], (string) $plan['work_date']]);
+        $plan['on_leave'] = $leave !== null;
+        $plan['leave_id'] = $leave === null ? null : (int) $leave['id'];
+        $plan['leave_label'] = $leave === null ? '' : 'Отпуск';
+        $plan['leave_from'] = $leave['start_date'] ?? null;
+        $plan['leave_to'] = $leave['end_date'] ?? null;
+        $plan['leave_version'] = $leave === null ? null : (int) $leave['version'];
+        if ($leave !== null) {
+            $plan['is_working'] = false;
+        }
+        // This classification is a current control setting, not a replacement shift schedule.
+        $plan['is_guard'] = (bool) $this->db->scalar('SELECT is_guard FROM employees WHERE id = ?', [(int) $plan['employee_id']]);
+        $plan['tracking_label'] = $plan['is_guard'] ? 'Охранник · без контроля графика' : '';
+        if ($plan['is_guard']) { $plan['is_working'] = false; }
         return $plan;
     }
 

@@ -5,8 +5,8 @@
   <meta name="csrf-token" content="{{ csrf|default('') }}">
   <meta name="color-scheme" content="light dark">
   <title>{% block title %}Staff · Учёт сотрудников{% endblock %}</title>
-  <link rel="icon" href="/assets/logo.png"><link rel="stylesheet" href="/assets/app.css">
-  <script src="/assets/app.js" defer></script>
+  <link rel="icon" href="/assets/logo.png"><link rel="stylesheet" href="/assets/app.css?v={{ asset_version }}">
+  <script src="/assets/app.js?v={{ asset_version }}" defer></script>
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
