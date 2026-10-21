@@ -57,16 +57,18 @@
   const ruleForm=$('#owner-automation-form');
   if(ruleForm){
     const fields=['id','version','name','employee_id','event_type','trigger_time','mark_time','trigger_day_offset','valid_from','valid_to'];
-    function resetRule(){if(snapshot(ruleForm)!==initial.get(ruleForm)&&!confirm('Сбросить несохранённые изменения правила?'))return;ruleForm.reset();ruleForm.elements.namedItem('id').value='';ruleForm.elements.namedItem('version').value='';$('[data-rule-editor-caption]').textContent='Новое правило';initial.set(ruleForm,snapshot(ruleForm));updateDirty();ruleForm.scrollIntoView({behavior:'smooth',block:'start'});ruleForm.elements.namedItem('name').focus({preventScroll:true})}
+    function syncRandomMinutes(){const box=$('input[type=checkbox][name=random_minutes]',ruleForm);if(!box)return;const supported=['arrival','departure'].includes(ruleForm.elements.namedItem('event_type').value);box.disabled=!supported;if(!supported)box.checked=false;const group=$('[data-rule-random]',ruleForm);if(group)group.hidden=!supported}
+    ruleForm.elements.namedItem('event_type').addEventListener('change',()=>{syncRandomMinutes();updateDirty()});syncRandomMinutes();
+    function resetRule(){if(snapshot(ruleForm)!==initial.get(ruleForm)&&!confirm('Сбросить несохранённые изменения правила?'))return;ruleForm.reset();ruleForm.elements.namedItem('id').value='';ruleForm.elements.namedItem('version').value='';syncRandomMinutes();$('[data-rule-editor-caption]').textContent='Новое правило';initial.set(ruleForm,snapshot(ruleForm));updateDirty();ruleForm.scrollIntoView({behavior:'smooth',block:'start'});ruleForm.elements.namedItem('name').focus({preventScroll:true})}
     $('[data-rule-new]')?.addEventListener('click',resetRule);$('[data-rule-cancel]')?.addEventListener('click',resetRule);
     $$('[data-rule-edit]').forEach(button=>button.addEventListener('click',()=>{
       if(snapshot(ruleForm)!==initial.get(ruleForm)&&!confirm('Открыть другое правило без сохранения текущего ввода?'))return;
       let rule;try{rule=JSON.parse(button.dataset.ruleEdit)}catch{return}
       ruleForm.reset();for(const field of fields){const input=ruleForm.elements.namedItem(field);if(input)input.value=rule[field]??''}
       $$('[name="weekdays[]"]',ruleForm).forEach(input=>input.checked=(rule.weekdays||[]).map(Number).includes(Number(input.value)));
-      for(const field of ['enabled','working_days_only'])$(`input[type=checkbox][name="${field}"]`,ruleForm).checked=Boolean(Number(rule[field]));
+      for(const field of ['enabled','working_days_only','random_minutes']){const input=$(`input[type=checkbox][name="${field}"]`,ruleForm);if(input)input.checked=Boolean(Number(rule[field]))}syncRandomMinutes();
       $('[data-rule-editor-caption]').textContent='Изменение правила';initial.set(ruleForm,snapshot(ruleForm));updateDirty();ruleForm.scrollIntoView({behavior:'smooth',block:'start'});ruleForm.elements.namedItem('name').focus({preventScroll:true});
     }));
-    ruleForm.addEventListener('submit',event=>{if(!$$('[name="weekdays[]"]:checked',ruleForm).length){event.preventDefault();leaveApproved=false;alert('Выберите хотя бы один день недели.');return}const offset=ruleForm.elements.namedItem('trigger_day_offset').value,mark=ruleForm.elements.namedItem('mark_time').value,trigger=ruleForm.elements.namedItem('trigger_time').value;if(offset==='0'&&mark>trigger){event.preventDefault();leaveApproved=false;alert('Время отметки не может быть позже времени срабатывания в тот же день.')}});
+    ruleForm.addEventListener('submit',event=>{if(!$$('[name="weekdays[]"]:checked',ruleForm).length){event.preventDefault();leaveApproved=false;alert('Выберите хотя бы один день недели.');return}const offset=ruleForm.elements.namedItem('trigger_day_offset').value,mark=ruleForm.elements.namedItem('mark_time').value,trigger=ruleForm.elements.namedItem('trigger_time').value,random=$('input[type=checkbox][name=random_minutes]',ruleForm);if(random?.checked&&mark>'23:54'){event.preventDefault();leaveApproved=false;alert('Для случайных минут задайте базовое время не позже 23:54, чтобы отметка осталась в том же дне.');return}if(offset==='0'&&mark>trigger){event.preventDefault();leaveApproved=false;alert('Время отметки не может быть позже времени срабатывания в тот же день.')}});
   }
 })();

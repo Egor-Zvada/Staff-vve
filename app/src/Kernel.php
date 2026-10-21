@@ -23,6 +23,7 @@ final class Kernel extends BaseKernel
         $services->load('App\\Controller\\','../src/Controller/')->tag('controller.service_arguments')->public();
         $services->set(Infrastructure\ExceptionListener::class)->tag('kernel.event_subscriber');
         $services->set(Infrastructure\Database::class)->arg('$url','%env(DATABASE_URL)%');
+        $services->set(Service\PrivateAutomationService::class)->arg('$randomSecret','%env(APP_SECRET)%');
     }
     protected function configureRoutes(RoutingConfigurator $routes): void
     {

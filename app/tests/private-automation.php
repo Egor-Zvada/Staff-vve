@@ -15,7 +15,7 @@ $schema=preg_replace('/^\s*--.*$/m','',file_get_contents(dirname(__DIR__).'/migr
 foreach(array_filter(array_map('trim',preg_split('/;\s*(?:\r?\n|$)/',$schema)))as$sql)$db->exec($sql);
 $now=new DateTimeImmutable('2026-10-21T09:59:00+11:00');$clock=static function()use(&$now):DateTimeImmutable{return $now;};
 $settings=new Settings($db);$settings->set('history_start','2026-10-01');$baselineAudit=(int)$db->scalar('SELECT COUNT(*) FROM audit_log');
-$schedule=new ScheduleService($db,$settings,$clock);$attendance=new AttendanceService($db,$settings,$schedule,$clock);$automation=new PrivateAutomationService($db,$settings,$schedule,$attendance,$clock);
+$schedule=new ScheduleService($db,$settings,$clock);$attendance=new AttendanceService($db,$settings,$schedule,$clock);$randomSecret='Private-Automation-QA-Deterministic-Secret';$automation=new PrivateAutomationService($db,$settings,$schedule,$attendance,$clock,$randomSecret);
 $db->insert('employees',['id'=>0,'pass_code'=>'000','surname'=>'Технический','given_name'=>'Администратор','is_service'=>1,'admin_role'=>'ADMIN']);
 $db->insert('schedule_groups',['id'=>1,'name'=>'Тестовый офис','start_time'=>'09:00:00','end_time'=>'18:00:00','weekdays'=>'[1,2,3,4,5]','effective_from'=>'2026-01-01']);
 foreach(range(1,18)as$id){$db->insert('employees',['id'=>$id,'pass_code'=>str_pad((string)$id,3,'0',STR_PAD_LEFT),'surname'=>'Тестовый','given_name'=>'Сотрудник '.$id,'started_on'=>'2026-01-01']);$db->insert('schedule_assignments',['employee_id'=>$id,'group_id'=>1,'valid_from'=>'2026-01-01']);}
@@ -88,4 +88,63 @@ $now=new DateTimeImmutable('2026-10-27T10:00:00+11:00');$automation->runDue();$a
 $assert(count($automation->recentRuns(999))<=50&&count($automation->listRules(1))===1,'Private list filters and recent run limit are bounded');
 $assert($automation->status()['last_success_at']!==null&&$automation->status()['last_error']==='','Scheduler heartbeat reports success');
 $assert((int)$db->scalar('SELECT COUNT(*) FROM audit_log')===$baselineAudit,'Rule changes never enter ordinary admin audit');
+
+// Randomized provisional arrival/departure: verify observable behavior, not the HMAC implementation.
+$assert(!$disabled['random_minutes'],'Migrated and newly created rules default to exact legacy time');
+$legacyRun=$findRun((int)$enabled['id']);
+$assert((int)$legacyRun['random_offset_minutes']===0&&substr((string)$legacyRun['base_mark_time'],0,5)==='09:00'&&substr((string)$legacyRun['mark_time'],0,5)==='09:00','Legacy run records exact base time and zero random offset');
+foreach(range(20,27)as$id){$db->insert('employees',['id'=>$id,'pass_code'=>str_pad((string)$id,3,'0',STR_PAD_LEFT),'surname'=>'ПроверкаРазброса','given_name'=>'Сотрудник '.$id,'started_on'=>'2026-01-01']);$db->insert('schedule_assignments',['employee_id'=>$id,'group_id'=>1,'valid_from'=>'2026-01-01']);}
+$now=new DateTimeImmutable('2026-10-28T09:00:00+11:00');
+$randomArrival=$rule(20,'arrival',['trigger_time'=>'09:00','mark_time'=>'09:00','valid_from'=>'2026-10-28','random_minutes'=>1]);
+$assert($randomArrival['random_minutes']===true,'Arrival rule exposes the enabled random-minutes flag');
+$selectPreview=static function(array $summary,int $id,string $date):?array{foreach($summary['results']as$result){if((int)($result['rule_id']??0)===$id&&($result['work_date']??'')===$date)return $result;}return null;};
+$previewAt=new DateTimeImmutable('2026-10-28T10:00:00+11:00');$before=$counts();$heartbeat=$automation->status();
+$randomPreview=$selectPreview($automation->runDue($previewAt,true),(int)$randomArrival['id'],'2026-10-28');
+$assert($randomPreview!==null&&$randomPreview['status']==='would_apply','Dry run predicts a randomized arrival');
+$randomOffset=(int)$randomPreview['random_offset_minutes'];$chosenArrival=substr((string)$randomPreview['mark_time'],0,5);
+$assert($randomOffset>=1&&$randomOffset<=5&&substr((string)$randomPreview['base_mark_time'],0,5)==='09:00','Random preview retains base time and chooses one to five minutes');
+$assert($chosenArrival===sprintf('09:%02d',$randomOffset),'Actual arrival time equals base plus its chosen offset');
+$restartedAutomation=new PrivateAutomationService($db,$settings,$schedule,$attendance,$clock,$randomSecret);
+$restartedPreview=$selectPreview($restartedAutomation->runDue($previewAt,true),(int)$randomArrival['id'],'2026-10-28');
+$assert($restartedPreview['mark_time']===$randomPreview['mark_time']&&(int)$restartedPreview['random_offset_minutes']===$randomOffset,'Restart and repeated preview choose the same per-rule/day offset');
+$assert($before===$counts()&&$heartbeat===$automation->status(),'Randomized dry runs do not write any row or heartbeat');
+$automation->runDue();$assert($findRun((int)$randomArrival['id'],'2026-10-28')===null,'A future random mark is not inserted at the base trigger');
+$chosenMoment=new DateTimeImmutable('2026-10-28T'.$chosenArrival.':00+11:00');$now=$chosenMoment->modify('-1 minute');$automation->runDue();
+$assert($findRun((int)$randomArrival['id'],'2026-10-28')===null,'The minute before the chosen randomized time remains pending');
+$now=$chosenMoment;$automation->runDue();$randomArrivalRun=$findRun((int)$randomArrival['id'],'2026-10-28');
+$assert($randomArrivalRun!==null&&$randomArrivalRun['status']==='applied'&&$attendance->day(20,'2026-10-28')['values']['arrival']===$chosenArrival,'Random arrival is applied exactly at the chosen minute');
+$assert((int)$randomArrivalRun['random_offset_minutes']===$randomOffset&&substr((string)$randomArrivalRun['base_mark_time'],0,5)==='09:00'&&substr((string)$randomArrivalRun['mark_time'],0,5)===$chosenArrival,'Run history persists actual, base and chosen offset separately');
+$privateChanges=(int)$db->scalar('SELECT COUNT(*) FROM attendance_changes WHERE employee_id=20');$automation->runDue();$restartedAutomation->runDue();
+$assert($findRun((int)$randomArrival['id'],'2026-10-28')===$randomArrivalRun&&(int)$db->scalar('SELECT COUNT(*) FROM attendance_changes WHERE employee_id=20')===$privateChanges,'Retries and scheduler restarts preserve the stored random value without reapplying');
+$saveWithoutRandom=$randomArrival;unset($saveWithoutRandom['random_minutes']);$saveWithoutRandom['name']='Переименованное правило';$randomArrival=$automation->save($saveWithoutRandom);
+$assert($randomArrival['random_minutes']===true,'Older form that omits random_minutes preserves an existing enabled flag');
+$now=$chosenMoment->modify('+2 minutes');$realArrival=$now->format('H:i');$attendance->mark(['request_id'=>$uuid(),'code'=>'020','event_type'=>'arrival']);
+$assert($attendance->day(20,'2026-10-28')['values']['arrival']===$realArrival&&$findRun((int)$randomArrival['id'],'2026-10-28')===$randomArrivalRun,'Real QR after randomized automation takes priority and retains the original run history');
+
+$now=new DateTimeImmutable('2026-10-28T10:00:00+11:00');$attendance->mark(['request_id'=>$uuid(),'code'=>'022','event_type'=>'arrival']);$existingRandom=$rule(22,'arrival',['valid_from'=>'2026-10-28','random_minutes'=>1]);$automation->runDue();
+$assert($findRun((int)$existingRandom['id'],'2026-10-28')['status']==='already_present'&&$attendance->day(22,'2026-10-28')['values']['arrival']==='10:00','Randomization never replaces an existing real arrival');
+$randomDeparture=$rule(21,'departure',['trigger_time'=>'18:00','mark_time'=>'18:00','valid_from'=>'2026-10-28','random_minutes'=>1]);
+$latePreview=$selectPreview($automation->runDue(new DateTimeImmutable('2026-10-28T18:10:00+11:00'),true),(int)$randomDeparture['id'],'2026-10-28');
+$departureOffset=(int)$latePreview['random_offset_minutes'];$chosenDeparture=substr((string)$latePreview['mark_time'],0,5);
+$assert($departureOffset>=1&&$departureOffset<=5&&$chosenDeparture===sprintf('18:%02d',$departureOffset)&&substr((string)$latePreview['base_mark_time'],0,5)==='18:00','Departure independently gets one to five minutes after its base');
+$exactDeparture=$rule(24,'departure',['trigger_time'=>'18:00','mark_time'=>'18:00','valid_from'=>'2026-10-28','random_minutes'=>0]);
+$now=new DateTimeImmutable('2026-10-28T18:00:00+11:00');$automation->runDue();
+$assert($findRun((int)$randomDeparture['id'],'2026-10-28')===null,'Random departure waits beyond the base trigger');
+$exactRun=$findRun((int)$exactDeparture['id'],'2026-10-28');$assert($exactRun['status']==='applied'&&(int)$exactRun['random_offset_minutes']===0&&substr((string)$exactRun['mark_time'],0,5)==='18:00'&&$attendance->day(24,'2026-10-28')['values']['departure']==='18:00','Explicitly disabled randomization preserves exact legacy timing');
+$omitExact=$exactDeparture;unset($omitExact['random_minutes']);$omitExact['name']='Точное время без изменения флага';$exactDeparture=$automation->save($omitExact);$assert($exactDeparture['random_minutes']===false,'Omitting flag also preserves an existing exact-time rule');
+$now=new DateTimeImmutable('2026-10-28T'.$chosenDeparture.':00+11:00');$automation->runDue();$departureRun=$findRun((int)$randomDeparture['id'],'2026-10-28');
+$assert($departureRun['status']==='applied'&&(int)$departureRun['random_offset_minutes']===$departureOffset&&$attendance->day(21,'2026-10-28')['values']['departure']===$chosenDeparture,'Chosen randomized departure is persisted and applied once');
+$now=new DateTimeImmutable('2026-10-28T19:00:00+11:00');$attendance->manual(['request_id'=>$uuid(),'employee_id'=>23,'code'=>'023','work_date'=>'2026-10-28','version'=>0,'values'=>['departure'=>'18:45']]);$manualRandom=$rule(23,'departure',['trigger_time'=>'19:00','mark_time'=>'18:00','valid_from'=>'2026-10-28','random_minutes'=>1]);$automation->runDue();
+$assert($findRun((int)$manualRandom['id'],'2026-10-28')['status']==='already_present'&&$attendance->day(23,'2026-10-28')['values']['departure']==='18:45','Randomization preserves an existing manually supplied departure');
+foreach(['lunch_out','lunch_in','excused_out']as$event)$fails(static fn()=>$rule(25,$event,['valid_from'=>'2026-10-28','random_minutes'=>1]),400,'Randomization is rejected for non-arrival/departure fields');
+$fails(static fn()=>$rule(25,'arrival',['trigger_time'=>'23:59','mark_time'=>'23:55','valid_from'=>'2026-10-28','random_minutes'=>1]),400,'Arrival randomization cannot overflow the date');
+$fails(static fn()=>$rule(25,'departure',['trigger_time'=>'23:59','mark_time'=>'23:59','valid_from'=>'2026-10-28','random_minutes'=>1]),400,'Departure randomization cannot overflow the date');
+$fails(static fn()=>$rule(25,'arrival',['trigger_time'=>'08:59','mark_time'=>'09:00','valid_from'=>'2026-10-28','random_minutes'=>1]),400,'Randomization does not relax the base mark-before-trigger constraint');
+$safeBoundary=$rule(26,'departure',['trigger_time'=>'23:54','mark_time'=>'23:54','valid_from'=>'2026-10-28','random_minutes'=>1]);$boundaryPreview=$selectPreview($automation->runDue(new DateTimeImmutable('2026-10-28T23:59:00+11:00'),true),(int)$safeBoundary['id'],'2026-10-28');
+$assert($boundaryPreview!==null&&(int)$boundaryPreview['random_offset_minutes']>=1&&(int)$boundaryPreview['random_offset_minutes']<=5&&substr((string)$boundaryPreview['mark_time'],0,5)>='23:55'&&substr((string)$boundaryPreview['mark_time'],0,5)<='23:59','Base23:54 is accepted and randomized only within the same date');
+$tomorrowPreview=$selectPreview($automation->runDue(new DateTimeImmutable('2026-10-29T10:00:00+11:00'),true),(int)$randomArrival['id'],'2026-10-29');
+$assert($tomorrowPreview!==null&&(int)$tomorrowPreview['random_offset_minutes']>=1&&(int)$tomorrowPreview['random_offset_minutes']<=5&&substr((string)$tomorrowPreview['base_mark_time'],0,5)==='09:00','Each next workday gets a valid per-day selection without requiring a different offset');
+$repeatTomorrow=$selectPreview($restartedAutomation->runDue(new DateTimeImmutable('2026-10-29T10:00:00+11:00'),true),(int)$randomArrival['id'],'2026-10-29');
+$assert($repeatTomorrow['mark_time']===$tomorrowPreview['mark_time']&&(int)$repeatTomorrow['random_offset_minutes']===(int)$tomorrowPreview['random_offset_minutes'],'Tomorrow selection is also deterministic across scheduler instances');
+$assert((int)$db->scalar('SELECT COUNT(*) FROM audit_log')===$baselineAudit,'Randomization configuration and executions remain outside ordinary admin audit');
 echo "Private automation: {$passed} MariaDB checks passed.\n";

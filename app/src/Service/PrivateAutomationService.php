@@ -15,7 +15,7 @@ final class PrivateAutomationService
     private const FIELDS = ['arrival','departure','lunch_out','lunch_in','excused_out'];
     private readonly Closure $clock;
 
-    public function __construct(private readonly Database $db, private readonly Settings $settings, private readonly ScheduleService $schedules, private readonly AttendanceService $attendance, ?Closure $clock = null)
+    public function __construct(private readonly Database $db, private readonly Settings $settings, private readonly ScheduleService $schedules, private readonly AttendanceService $attendance, ?Closure $clock = null, private readonly string $randomSecret = 'isolated-automation-test-seed')
     {
         $this->clock = $clock ?? static fn (): DateTimeImmutable => new DateTimeImmutable('now', new DateTimeZone('UTC'));
     }
@@ -51,18 +51,22 @@ final class PrivateAutomationService
         if ($to !== null && $to < $from) { throw new DomainException('Окончание действия раньше начала.', 400); }
         $enabled = EmployeeService::bool($data['enabled'] ?? false);
         $workingOnly = EmployeeService::bool($data['working_days_only'] ?? true);
+        $randomMinutes = array_key_exists('random_minutes',$data) ? EmployeeService::bool($data['random_minutes']) : null;
 
-        return $this->db->transaction(function () use ($data,$id,$employeeId,$name,$event,$trigger,$mark,$offset,$weekdays,$from,$to,$enabled,$workingOnly): array {
+        return $this->db->transaction(function () use ($data,$id,$employeeId,$name,$event,$trigger,$mark,$offset,$weekdays,$from,$to,$enabled,$workingOnly,$randomMinutes): array {
             $before = $id === 0 ? null : $this->db->one('SELECT * FROM private_automation_rules WHERE id=?'.$this->lock(), [$id]);
             if ($id > 0 && $before === null) { throw new DomainException('Правило не найдено.', 404); }
             if ($before !== null) { $this->checkVersion($before, $data); }
+            $randomMinutes ??= (int)($before['random_minutes']??0);
+            if ($randomMinutes && !in_array($event,['arrival','departure'],true)) { throw new DomainException('Случайные минуты доступны только для прихода и ухода.',400); }
+            if ($randomMinutes && $mark > '23:54:00') { throw new DomainException('Для случайного сдвига задайте время не позже 23:54, чтобы отметка осталась в выбранном дне.',400); }
             $employee = $this->db->one('SELECT id,is_service FROM employees WHERE id=?'.$this->lock(), [$employeeId]);
             if ($employee === null || (int) $employee['is_service'] === 1) { throw new DomainException('Сотрудник не найден.', 404); }
             if ($this->db->one('SELECT id FROM private_automation_rules WHERE employee_id=? AND event_type=? AND trigger_time=? AND trigger_day_offset=? AND id<>?', [$employeeId,$event,$trigger,$offset,$id]) !== null) { throw new DomainException('У сотрудника уже есть правило для этой метки и времени срабатывания.', 409); }
             $newActivation = $enabled && ($before === null || !(bool) $before['enabled'] || (int) $before['employee_id'] !== $employeeId);
             if ($newActivation && $from < $this->today()) { throw new DomainException('При включении правила задайте начало действия не раньше сегодняшнего дня. Прошлое редактируется в недельном табеле.', 400); }
             $stamp = $this->stamp();
-            $fields = ['employee_id'=>$employeeId,'name'=>$name,'event_type'=>$event,'trigger_time'=>$trigger,'mark_time'=>$mark,'trigger_day_offset'=>$offset,'weekdays'=>$this->json($weekdays),'working_days_only'=>$workingOnly,'enabled'=>$enabled,'enabled_from'=>$enabled ? ($newActivation ? $this->today() : $before['enabled_from']) : ($before['enabled_from'] ?? null),'valid_from'=>$from,'valid_to'=>$to,'version'=>(int) ($before['version'] ?? 0)+1,'updated_at'=>$stamp];
+            $fields = ['employee_id'=>$employeeId,'name'=>$name,'event_type'=>$event,'trigger_time'=>$trigger,'mark_time'=>$mark,'random_minutes'=>$randomMinutes,'trigger_day_offset'=>$offset,'weekdays'=>$this->json($weekdays),'working_days_only'=>$workingOnly,'enabled'=>$enabled,'enabled_from'=>$enabled ? ($newActivation ? $this->today() : $before['enabled_from']) : ($before['enabled_from'] ?? null),'valid_from'=>$from,'valid_to'=>$to,'version'=>(int) ($before['version'] ?? 0)+1,'updated_at'=>$stamp];
             if ($before === null) { $fields['created_at']=$stamp; $this->db->insert('private_automation_rules',$fields); $id=(int)$this->db->db->lastInsertId(); }
             else { $this->update('private_automation_rules',$fields,'id=?',[$id]); }
             $after = $this->find($id);
@@ -141,7 +145,12 @@ final class PrivateAutomationService
         $weekday=(int)(new DateTimeImmutable($date,new DateTimeZone(ScheduleService::TIMEZONE)))->format('N');
         if (!in_array($weekday,array_map('intval',json_decode((string)$rule['weekdays'],true,32,JSON_THROW_ON_ERROR)),true)) { return null; }
         $trigger=(new DateTimeImmutable($date.' '.$rule['trigger_time'],new DateTimeZone(ScheduleService::TIMEZONE)))->modify('+'.(int)$rule['trigger_day_offset'].' day');
-        if ($now<$trigger || new DateTimeImmutable($date.' '.$rule['mark_time'],new DateTimeZone(ScheduleService::TIMEZONE))>$now) { return null; }
+        // A keyed per-rule/day draw is stable before execution too: repeated minute
+        // checks and dry runs cannot reroll a future choice. Applied values are also
+        // recorded in the unique daily run, independently of later rule edits.
+        $randomOffset=!empty($rule['random_minutes'])?1+(int)hexdec(substr(hash_hmac('sha256',$ruleId.':'.$date,$this->randomSecret),0,8))%5:0;
+        $chosenMark=(new DateTimeImmutable($date.' '.$rule['mark_time'],new DateTimeZone(ScheduleService::TIMEZONE)))->modify('+'.$randomOffset.' minutes');
+        if ($now<$trigger || $chosenMark>$now) { return null; }
         if ($this->db->one('SELECT id FROM private_automation_runs WHERE rule_id=? AND work_date=?',[$ruleId,$date])!==null) { return null; }
         $employee=$this->db->one('SELECT * FROM employees WHERE id=?'.($dryRun?'':$this->lock()),[(int)$rule['employee_id']]);
         $reason=$this->exemption($employee,$date);
@@ -159,9 +168,9 @@ final class PrivateAutomationService
         $status??='skipped';
         $requestId='owner-auto-'.$ruleId.'-'.$date;
         if (!$dryRun && $status==='applied') {
-            $this->attendance->ownerAdjust(['request_id'=>$requestId,'action'=>'correct','employee_id'=>(int)$rule['employee_id'],'work_date'=>$date,'version'=>(int)($day['version']??0),'values'=>[$rule['event_type']=>substr((string)$rule['mark_time'],0,5)],'automation_rule_id'=>$ruleId,'reason'=>'Автоматизация: '.$rule['name']]);
+            $this->attendance->ownerAdjust(['request_id'=>$requestId,'action'=>'correct','employee_id'=>(int)$rule['employee_id'],'work_date'=>$date,'version'=>(int)($day['version']??0),'values'=>[$rule['event_type']=>$chosenMark->format('H:i')],'automation_rule_id'=>$ruleId,'reason'=>'Автоматизация: '.$rule['name']]);
         }
-        $result=['rule_id'=>$ruleId,'rule_version'=>(int)$rule['version'],'employee_id'=>(int)$rule['employee_id'],'work_date'=>$date,'event_type'=>$rule['event_type'],'mark_time'=>$rule['mark_time'],'status'=>$status,'message'=>$reason,'request_id'=>$status==='applied'?$requestId:null,'created_at'=>$this->stamp($now)];
+        $result=['rule_id'=>$ruleId,'rule_version'=>(int)$rule['version'],'employee_id'=>(int)$rule['employee_id'],'work_date'=>$date,'event_type'=>$rule['event_type'],'mark_time'=>$chosenMark->format('H:i:s'),'base_mark_time'=>$rule['mark_time'],'random_offset_minutes'=>$randomOffset,'status'=>$status,'message'=>$reason,'request_id'=>$status==='applied'?$requestId:null,'created_at'=>$this->stamp($now)];
         if (!$dryRun) { $this->db->insert('private_automation_runs',$result); }
         return $result;
     }
@@ -185,7 +194,7 @@ final class PrivateAutomationService
         if ($row===null) { throw new DomainException('Правило не найдено.',404); }
         return $this->decorate($row);
     }
-    private function decorate(array $row): array { $row['weekdays']=json_decode((string)$row['weekdays'],true,32,JSON_THROW_ON_ERROR);$row['enabled']=(bool)$row['enabled'];$row['working_days_only']=(bool)$row['working_days_only'];$row['trigger_day_offset']=(int)$row['trigger_day_offset'];$row['employee_name']=trim($row['surname'].' '.$row['given_name'].' '.$row['patronymic']);$row['display_id']=(string)$row['pass_code'];$row['trigger_time']=substr((string)$row['trigger_time'],0,5);$row['mark_time']=substr((string)$row['mark_time'],0,5);return $row; }
+    private function decorate(array $row): array { $row['random_minutes']=(bool)($row['random_minutes']??false);$row['weekdays']=json_decode((string)$row['weekdays'],true,32,JSON_THROW_ON_ERROR);$row['enabled']=(bool)$row['enabled'];$row['working_days_only']=(bool)$row['working_days_only'];$row['trigger_day_offset']=(int)$row['trigger_day_offset'];$row['employee_name']=trim($row['surname'].' '.$row['given_name'].' '.$row['patronymic']);$row['display_id']=(string)$row['pass_code'];$row['trigger_time']=substr((string)$row['trigger_time'],0,5);$row['mark_time']=substr((string)$row['mark_time'],0,5);return $row; }
     private function checkVersion(array $row,array $data): void { if (!isset($data['version']) || !is_scalar($data['version']) || !preg_match('/^\d+$/D',(string)$data['version']) || (int)$data['version']!==(int)$row['version']) { throw new DomainException('Правило изменилось. Обновите экран.',409); } }
     private function update(string $table,array $fields,string $where,array $params): void { $this->db->exec('UPDATE '.$table.' SET '.implode(',',array_map(static fn(string $key):string=>$key.'=?',array_keys($fields))).' WHERE '.$where,[...array_values($fields),...$params]); }
     private function audit(string $action,int $employeeId,?array $before,array $after): void { $this->db->insert('private_service_events',['action'=>$action,'employee_id'=>$employeeId,'work_date'=>$this->today(),'before_json'=>$this->json($before),'after_json'=>$this->json($after),'reason'=>'','created_at'=>$this->stamp()]); }
