@@ -35,7 +35,8 @@ final class RootController
         $data=$id>0?$this->attendance->day($id,$date):['employee'=>null,'events'=>[],'changes'=>[],'flags'=>[],'plan'=>null];
         $data['day']=$id>0?$data:[];
         $display=$id>0?($data['employee']['pass_code']??str_pad((string)$id,3,'0',STR_PAD_LEFT)):'';
-        return $this->web->render('manual.html.twig',$data+['employee_id'=>$id,'code'=>$code!==''?$code:$display,'date'=>$date]);
+        $people=$this->database->all("SELECT id,pass_code,CONCAT_WS(' ',surname,given_name,NULLIF(patronymic,'')) AS name FROM employees WHERE active=1 AND is_service=0 ORDER BY surname,given_name,id");
+        return $this->web->render('manual.html.twig',$data+['employee_id'=>$id,'code'=>$display!==''?$display:$code,'date'=>$date,'manual_people'=>$people]);
     }
     public function day(Request $request):Response
     {

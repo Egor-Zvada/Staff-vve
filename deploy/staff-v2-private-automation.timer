@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Staff V2 private rules each minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Persistent=true
+Unit=staff-v2-private-automation.service
+
+[Install]
+WantedBy=timers.target

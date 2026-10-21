@@ -49,7 +49,7 @@ final class AttendanceService
             $eventId = (int) $this->db->db->lastInsertId();
             $overrides = $this->decode($day['overrides_json']);
             // A new scan replaces only its field in an explicitly cleaned baseline.
-            if (!empty($overrides[$type]['owner_clean'])) { unset($overrides[$type]); }
+            if (!empty($overrides[$type]['owner_clean']) || !empty($overrides[$type]['automation_rule_id'])) { unset($overrides[$type]); }
             $day = $this->project($employeeId, $date, $overrides, (int) $day['version'] + 1, $plan);
             $this->evaluate($employeeId, $date, $day, $plan, $now);
             return $this->markResponse($employee, $date, $type, $now, false, $eventId);
@@ -229,6 +229,10 @@ final class AttendanceService
                     if (!$this->sameValue($day[$field.'_at'], $input, $date)) {
                         $changeId = $this->change($employeeId, $date, $field, $day[$field.'_at'], $after, $now, 'owner_adjust', null, [], $requestId, true);
                         $overrides[$field] = ['value' => $after, 'change_id' => $changeId, 'private' => true];
+                        if (isset($payload['automation_rule_id'])) {
+                            if (!is_scalar($payload['automation_rule_id']) || !preg_match('/^[1-9]\d*$/D',(string)$payload['automation_rule_id'])) { throw new DomainException('Некорректное правило автоматизации.',400); }
+                            $overrides[$field]['automation_rule_id']=(int)$payload['automation_rule_id'];
+                        }
                     }
                     $scope = $this->scopeForFields($employeeId, $date, [$field]);
                     $counts = $this->visibility($employeeId, $date, $scope, true, $reason, $now);

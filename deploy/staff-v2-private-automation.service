@@ -1,0 +1,20 @@
+[Unit]
+Description=Staff V2 private scheduled attendance rules
+After=mariadb.service
+Requires=mariadb.service
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/staff-v2/app
+Environment=APP_ENV=prod APP_DEBUG=0
+RuntimeDirectory=staff-v2-private
+RuntimeDirectoryMode=0700
+ExecStart=/usr/bin/flock -n /run/staff-v2-private/automation.lock /usr/bin/php /opt/staff-v2/app/bin/console app:private-automation --no-debug --no-interaction
+TimeoutStartSec=55
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true

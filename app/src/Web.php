@@ -14,7 +14,7 @@ final class Web
     private function assetVersion():string
     {
         $hash=hash_init('sha256');
-        foreach(['app.css','app.js','print.js','dashboard.js','employee-search.js']as$file){hash_update_file($hash,dirname(__DIR__).'/public/assets/'.$file);}
+        foreach(['app.css','app.js','print.js','dashboard.js','employee-search.js','private.css','private.js']as$file){$path=dirname(__DIR__).'/public/assets/'.$file;if(is_file($path))hash_update_file($hash,$path);}
         return substr(hash_final($hash),0,16);
     }
     public function json(array $data,int $status=200):JsonResponse{return new JsonResponse($data,$status,[],false);}

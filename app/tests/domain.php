@@ -90,6 +90,7 @@ namespace {
         require $root.'/src/Service/EmployeeService.php';
         require $root.'/src/Service/LeaveService.php';
         require $root.'/src/Service/AttendanceService.php';
+        require $root.'/src/Service/OwnerWeekService.php';
     }
 
     function schemaStatements(string $schema, bool $sqlite): array
@@ -681,6 +682,43 @@ namespace {
         eq($f->attendance->dashboard('2026-10-13')['summary']['late_percent'], null, 'No fake zero percent');
         fails(fn () => $f->attendance->period('2026-02-30', '2026-03-01'), 400);
         fails(fn () => $f->attendance->period('2026-01-01', '2027-01-02'), 400);
+    });
+
+    function weekService(Fixture $f): \App\Service\OwnerWeekService { return new \App\Service\OwnerWeekService($f->db,$f->attendance,fn(): DateTimeImmutable=>$f->clock); }
+    function weekRow(array $day,array $values=[],bool $clean=false):array { return ['selected'=>'1','version'=>$day['version'],'clean'=>$clean?'1':'0','values'=>array_replace($day['values'],$values)]; }
+
+    test('private week is Monday to Sunday, marks future dates and displays Russian context', function(Fixture $f):void {
+        $f->at('2026-10-14 12:00:00');$week=weekService($f)->week(7,'2026-10-14');
+        eq($week['start'],'2026-10-12','Monday');eq($week['end'],'2026-10-18','Sunday');eq(count($week['days']),7,'Seven rows');
+        eq($week['days'][0]['weekday'],'Понедельник','Russian weekday');eq($week['days'][2]['is_future'],false,'Today editable');eq($week['days'][3]['is_future'],true,'Future disabled');
+    });
+    test('private week edits selected fields without hiding untouched arrival and lunch evidence', function(Fixture $f):void {
+        $f->mark('09:12:00','arrival');$f->mark('12:00:00','lunch_out');$f->mark('12:30:00','lunch_in');$f->mark('18:00:00','departure');$f->at('2026-10-14 12:00:00');
+        $before=$f->row();$result=weekService($f)->save(['employee_id'=>7,'week_start'=>'2026-10-12','request_id'=>'week-field-scope','rows'=>['2026-10-13'=>weekRow($before,['departure'=>'23:00'])]]);
+        eq($result['saved_dates'],['2026-10-13'],'Only selected date');$after=$f->row();eq($after['values']['departure'],'23:00','Late-night departure');
+        eq($after['values']['arrival'],'09:12','Arrival retained');eq(count($after['events']),3,'Only replaced departure hidden');ok(has($after,'LATE_ARRIVAL'),'Unrelated late arrival stays visible');
+        $count=$f->count('private_service_events');$noop=weekService($f)->save(['employee_id'=>7,'week_start'=>'2026-10-12','request_id'=>'week-no-op-scope','rows'=>['2026-10-13'=>weekRow($after)]]);
+        eq($noop['unchanged_dates'],['2026-10-13'],'Selected no-op is harmless');eq($f->count('private_service_events'),$count,'No extra correction for no-op');
+    });
+    test('private week cleans multiple selected days atomically and retry cannot erase a later edit', function(Fixture $f):void {
+        $f->manual('2026-10-14 10:00:00',['arrival'=>'09:20','departure'=>'17:00'],'2026-10-12');$f->manual('2026-10-14 10:01:00',['arrival'=>'09:30','departure'=>'17:00'],'2026-10-13');
+        $a=$f->row('2026-10-12');$b=$f->row('2026-10-13');$service=weekService($f);
+        $payload=['employee_id'=>7,'week_start'=>'2026-10-12','request_id'=>'week-clean-two-days','rows'=>['2026-10-12'=>weekRow($a,['arrival'=>'09:00','departure'=>'23:00'],true),'2026-10-13'=>weekRow($b,['arrival'=>'08:55','departure'=>'18:00'],true)]];
+        $saved=$service->save($payload);eq(count($saved['saved_dates']),2,'Two dates saved');foreach(['2026-10-12','2026-10-13']as$date){$row=$f->row($date);eq($row['events'],[],'Clean events');eq($row['changes'],[],'Clean changes');eq($row['flags'],[],'Clean flags');}
+        $later=$f->manual('2026-10-14 10:05:00',['arrival'=>'08:50'],'2026-10-12');$replay=$service->save($payload);ok($replay['replayed'],'Same request replay');eq($f->row('2026-10-12')['values']['arrival'],'08:50','Later edit survives old save retry');
+        $payload['rows']['2026-10-12']['values']['arrival']='08:00';fails(fn()=>$service->save($payload),409);
+    });
+    test('private week rejects stale second day without changing first and rejects future or out-of-week dates', function(Fixture $f):void {
+        $f->at('2026-10-14 12:00:00');$a=$f->row('2026-10-12');$b=$f->row('2026-10-13');$f->manual('2026-10-14 12:01:00',['arrival'=>'09:10'],'2026-10-13');
+        $payload=['employee_id'=>7,'week_start'=>'2026-10-12','request_id'=>'week-stale-atomic','rows'=>['2026-10-12'=>weekRow($a,['arrival'=>'09:00'],true),'2026-10-13'=>weekRow($b,['arrival'=>'09:00'],true)]];
+        fails(fn()=>weekService($f)->save($payload),409);eq($f->row('2026-10-12')['values']['arrival'],null,'First date unchanged');
+        foreach(['2026-10-15','2026-10-11']as$date){$payload['request_id']='invalid-'.$date;$payload['rows']=[$date=>weekRow($a)];fails(fn()=>weekService($f)->save($payload),400);}
+        $payload['rows']=['2026-10-12'=>['selected'=>0]];fails(fn()=>weekService($f)->save($payload),400);
+    });
+
+    test('real scan replaces a provisional automatic value and is evaluated at its actual time', function(Fixture $f):void {
+        $f->at('10:00:00');$f->attendance->ownerAdjust(['request_id'=>'owner-auto-real-priority','action'=>'correct','employee_id'=>7,'work_date'=>'2026-10-13','version'=>0,'values'=>['arrival'=>'09:00'],'automation_rule_id'=>123]);
+        eq($f->row()['values']['arrival'],'09:00','Automatic default was filled');$result=$f->mark('10:05:00','arrival');eq($result['official_time'],'10:05','Real scan wins');ok(has($f->row(),'LATE_ARRIVAL'),'Actual late scan is still checked');eq(count($f->row()['events']),1,'Actual event preserved');
     });
 
     $passed = $failed = 0;

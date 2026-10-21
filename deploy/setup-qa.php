@@ -1,7 +1,9 @@
 <?php
 declare(strict_types=1);
 if(PHP_SAPI!=='cli'||posix_geteuid()!==0)throw new RuntimeException('Run as root');
-$project='/opt/staff-v2/app';require $project.'/vendor/autoload.php';
+$project=$argv[2]??'/opt/staff-v2/app';
+if(!preg_match('~^/opt/staff-v2/(?:app|qa-[a-z0-9-]+)$~D',$project)||realpath($project)!==$project)throw new RuntimeException('Unexpected QA project directory');
+require $project.'/vendor/autoload.php';
 (new Symfony\Component\Dotenv\Dotenv())->bootEnv($project.'/.env');
 $root=new PDO('mysql:unix_socket=/run/mysqld/mysqld.sock','root','',[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
 if($root->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='staff_v2_qa'")->fetchColumn())throw new RuntimeException('QA database must be empty; existing test data retained');

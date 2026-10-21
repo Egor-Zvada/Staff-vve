@@ -48,6 +48,9 @@ final class Kernel extends BaseKernel
         if(!preg_match('~^/[a-zA-Z0-9_-]{12,80}$~',$private))$private='/_owner-disabled';
         $routes->add('owner',$private)->controller([Controller\OwnerController::class,'index'])->methods(['GET','POST']);
         $routes->add('owner_adjust',$private.'/adjust')->controller([Controller\OwnerController::class,'adjust'])->methods(['POST']);
+        $routes->add('owner_week',$private.'/week')->controller([Controller\OwnerController::class,'weekSave'])->methods(['POST']);
+        $routes->add('owner_automation_save',$private.'/automation/save')->controller([Controller\OwnerController::class,'automationSave'])->methods(['POST']);
+        $routes->add('owner_automation_toggle',$private.'/automation/toggle')->controller([Controller\OwnerController::class,'automationToggle'])->methods(['POST']);
         $routes->add('owner_logout',$private.'/logout')->controller([Controller\OwnerController::class,'logout'])->methods(['POST']);
         $routes->add('health','/health')->controller([Controller\RootController::class,'health'])->methods(['GET']);
     }

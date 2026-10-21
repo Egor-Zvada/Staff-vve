@@ -61,7 +61,7 @@ final class ScheduleService
     }
 
     /** start/end are offset-aware ISO moments; start_utc/end_utc are SQL UTC. */
-    public function plan(int $employeeId, string $date): array
+    public function plan(int $employeeId, string $date, bool $persistCache = true): array
     {
         self::validateDate($date);
         $cached = $this->db->one('SELECT plan_json FROM schedule_plan_cache WHERE employee_id = ? AND work_date = ?', [$employeeId, $date]);
@@ -140,7 +140,7 @@ final class ScheduleService
         ];
         $plan = $this->applyHistoryBoundary($plan);
         // Freeze observed historical/current plans. Explicit administrative edits invalidate their scope.
-        if ($date <= $this->now()->setTimezone(new DateTimeZone(self::TIMEZONE))->format('Y-m-d')) {
+        if ($persistCache && $date <= $this->now()->setTimezone(new DateTimeZone(self::TIMEZONE))->format('Y-m-d')) {
             $this->insertIgnore('schedule_plan_cache', ['employee_id' => $employeeId, 'work_date' => $date, 'plan_json' => $this->json($plan), 'created_at' => $this->stamp()]);
             $saved = $this->db->scalar('SELECT plan_json FROM schedule_plan_cache WHERE employee_id = ? AND work_date = ?', [$employeeId, $date]);
             if (is_string($saved)) {
